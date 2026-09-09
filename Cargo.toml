@@ -1,0 +1,19 @@
+[package]
+name = "postui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", features = ["serde"] }
+crossterm = "0.29"
+dirs = "5"
+edtui = "0.11"
+open = "5"
+ratatui = "0.30"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+tokio = { version = "1.53.1", features = ["full"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
