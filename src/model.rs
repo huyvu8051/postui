@@ -232,14 +232,17 @@ impl RequestItem {
 
     /// Substitute `:name` path segments in `url` using this request's
     /// `path_params` values.
-    pub fn resolve_url(&self, url: &str) -> String {
+    /// `resolve` substitutes `{{var}}` in a path param's own value, so a
+    /// value like `{{tenantId}}` works the same way it does in the URL,
+    /// headers, or body — not just a literal string.
+    pub fn resolve_url(&self, url: &str, resolve: &impl Fn(&str) -> String) -> String {
         url.split('/')
             .map(|segment| {
                 let Some(name) = segment.strip_prefix(':') else {
                     return segment.to_string();
                 };
                 match self.path_params.iter().find(|(k, _)| k == name) {
-                    Some((_, v)) => v.clone(),
+                    Some((_, v)) => resolve(v),
                     None => segment.to_string(),
                 }
             })

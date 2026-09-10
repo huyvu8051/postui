@@ -135,6 +135,8 @@ panel between URL and Headers — separate from environments:
 - `j`/`k` to move selection, `i`/`Enter` opens a small popup to edit the
   value (the name itself isn't editable — it's derived from the URL).
 - Values are per-request and saved with the request (`Ctrl+S`).
+- A value can itself use `{{variable}}`, resolved from the active
+  environment at send time — same substitution as the URL/headers/body.
 
 Only a `:` that starts a whole `/`-delimited URL segment counts, so
 `https://host:8080/path` is untouched — that's a port, not a param.

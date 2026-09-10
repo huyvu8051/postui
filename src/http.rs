@@ -11,7 +11,7 @@ pub async fn send_request(req: &RequestItem, env: Option<&Environment>) -> Resul
         }
     };
 
-    let url = req.resolve_url(&resolve(&req.url));
+    let url = req.resolve_url(&resolve(&req.url), &resolve);
     if url::Url::parse(&url).is_err() {
         anyhow::bail!(
             "'{url}' is not a valid URL (missing scheme? try https://...) \
