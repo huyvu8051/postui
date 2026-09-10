@@ -75,6 +75,82 @@ impl Header {
     }
 }
 
+/// Which of the mutually-exclusive body representations a request sends.
+/// Mirrors Postman's Raw / Form Data / Binary body tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BodyMode {
+    /// Plain text (often JSON) — `RequestItem::body`, sent as-is.
+    #[default]
+    Raw,
+    /// `multipart/form-data` — `RequestItem::form_fields`, each a text value
+    /// or a file to upload.
+    FormData,
+    /// A single file's raw bytes as the whole body — `RequestItem::binary_file`.
+    Binary,
+}
+
+impl BodyMode {
+    pub const ALL: [BodyMode; 3] = [BodyMode::Raw, BodyMode::FormData, BodyMode::Binary];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BodyMode::Raw => "Raw",
+            BodyMode::FormData => "Form Data",
+            BodyMode::Binary => "Binary",
+        }
+    }
+
+    pub fn next(&self) -> BodyMode {
+        let idx = BodyMode::ALL.iter().position(|m| m == self).unwrap();
+        BodyMode::ALL[(idx + 1) % BodyMode::ALL.len()]
+    }
+
+    pub fn prev(&self) -> BodyMode {
+        let idx = BodyMode::ALL.iter().position(|m| m == self).unwrap();
+        BodyMode::ALL[(idx + BodyMode::ALL.len() - 1) % BodyMode::ALL.len()]
+    }
+}
+
+/// One `multipart/form-data` field: either a literal text value or a file
+/// read from disk at send time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FormValue {
+    Text(String),
+    File(String),
+}
+
+impl FormValue {
+    /// The raw string content, regardless of which kind this is — the
+    /// key/value edit popup only ever edits this string; `t` in the Form
+    /// Data list toggles which kind it's wrapped in.
+    pub fn as_str(&self) -> &str {
+        match self {
+            FormValue::Text(s) | FormValue::File(s) => s,
+        }
+    }
+
+    pub fn is_file(&self) -> bool {
+        matches!(self, FormValue::File(_))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormField {
+    pub key: String,
+    pub value: FormValue,
+    pub enabled: bool,
+}
+
+impl FormField {
+    pub fn new_text(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: FormValue::Text(value.into()),
+            enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestItem {
     pub id: Uuid,
@@ -87,7 +163,17 @@ pub struct RequestItem {
     #[serde(default)]
     pub path_params: Vec<(String, String)>,
     pub headers: Vec<Header>,
+    /// Raw body text. Only sent when `body_mode` is `Raw`, but always kept
+    /// around (so switching modes and back doesn't lose it).
     pub body: String,
+    #[serde(default)]
+    pub body_mode: BodyMode,
+    #[serde(default)]
+    pub form_fields: Vec<FormField>,
+    /// Path to the file sent as the whole body in `Binary` mode. Empty means
+    /// none selected yet.
+    #[serde(default)]
+    pub binary_file: String,
 }
 
 /// Names of `:paramName` path segments in `url`, in order of first
@@ -119,6 +205,9 @@ impl RequestItem {
             path_params: Vec::new(),
             headers: Vec::new(),
             body: String::new(),
+            body_mode: BodyMode::default(),
+            form_fields: Vec::new(),
+            binary_file: String::new(),
         }
     }
 

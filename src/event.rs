@@ -5,7 +5,18 @@ use crate::app::{
     single_line_state, App, Focus, HeaderFormField, HeaderFormTarget, Popup, SidebarEntry,
     TextInputTarget,
 };
-use crate::model::{Collection, Environment, Header, RequestItem};
+use crate::model::{BodyMode, Collection, Environment, FormField, FormValue, Header, RequestItem};
+
+/// Whether the focused pane is a full edtui vim buffer (as opposed to a
+/// plain list/selector). Those panes hand every non-global key to edtui and
+/// suppress the app's own bare-letter shortcuts (`q`, `e`, ...) while
+/// focused. `Url` and `Response` always qualify; `Body` only does in `Raw`
+/// mode — in `FormData`/`Binary` mode it's a list like Headers, not a vim
+/// buffer, so the app's own shortcuts should work there.
+fn is_vim_editor_focus(app: &App) -> bool {
+    matches!(app.focus, Focus::Url | Focus::Response)
+        || (app.focus == Focus::Body && app.current.body_mode == BodyMode::Raw)
+}
 
 pub enum Action {
     None,
@@ -39,7 +50,9 @@ pub fn handle_paste(app: &mut App, text: String) {
 
     match app.focus {
         Focus::Url => app.editor_events.on_paste_event(text, &mut app.url_state),
-        Focus::Body => app.editor_events.on_paste_event(text, &mut app.body_state),
+        Focus::Body if app.current.body_mode == BodyMode::Raw => {
+            app.editor_events.on_paste_event(text, &mut app.body_state)
+        }
         Focus::Response => app.editor_events.on_paste_event(text, &mut app.response_state),
         _ => {}
     }
@@ -92,7 +105,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     // gets you out to switch panes; the app-level `q`/`e`/... shortcuts
     // otherwise only apply on the list-based panes (Sidebar/Headers/
     // PathParams), which don't have this conflict.
-    if app.focus.is_editor() {
+    if is_vim_editor_focus(app) {
         return handle_editor_pane_key(app, key);
     }
 
@@ -112,7 +125,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         Focus::Method => handle_method_key(app, key),
         Focus::PathParams => handle_path_params_key(app, key),
         Focus::Headers => handle_headers_key(app, key),
-        Focus::Url | Focus::Body | Focus::Response => unreachable!("handled above"),
+        Focus::BodyMode => handle_body_mode_key(app, key),
+        // Only reached when body_mode != Raw (Raw is a vim buffer, handled above).
+        Focus::Body => handle_body_field_key(app, key),
+        Focus::Url | Focus::Response => unreachable!("handled above"),
     }
 
     Action::None
@@ -232,6 +248,85 @@ fn handle_headers_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_body_mode_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('h') | KeyCode::Left => {
+            app.current.body_mode = app.current.body_mode.prev();
+            app.form_field_index = 0;
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            app.current.body_mode = app.current.body_mode.next();
+            app.form_field_index = 0;
+        }
+        _ => {}
+    }
+}
+
+/// Dispatches to the Body pane's current non-Raw representation. (Raw mode
+/// never reaches here — it's a vim buffer, routed through
+/// `handle_editor_pane_key` instead.)
+fn handle_body_field_key(app: &mut App, key: KeyEvent) {
+    match app.current.body_mode {
+        BodyMode::Raw => unreachable!("Raw body is a vim buffer, handled above"),
+        BodyMode::FormData => handle_form_data_key(app, key),
+        BodyMode::Binary => handle_binary_key(app, key),
+    }
+}
+
+fn handle_form_data_key(app: &mut App, key: KeyEvent) {
+    let len = app.current.form_fields.len();
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if len > 0 {
+                app.form_field_index = (app.form_field_index + 1).min(len - 1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.form_field_index = app.form_field_index.saturating_sub(1);
+        }
+        KeyCode::Char('n') => {
+            open_header_form(app, HeaderFormTarget::FormField, None);
+        }
+        KeyCode::Char('i') | KeyCode::Enter if len > 0 => {
+            open_header_form(app, HeaderFormTarget::FormField, Some(app.form_field_index));
+        }
+        KeyCode::Char('d') if len > 0 => {
+            app.current.form_fields.remove(app.form_field_index);
+            app.form_field_index = app.form_field_index.saturating_sub(1);
+        }
+        KeyCode::Char(' ') if len > 0 => {
+            if let Some(f) = app.selected_form_field_mut() {
+                f.enabled = !f.enabled;
+            }
+        }
+        // Toggle whether the selected field's value is a literal text value
+        // or a path to a file to upload, keeping the typed string as-is.
+        KeyCode::Char('t') if len > 0 => {
+            if let Some(f) = app.selected_form_field_mut() {
+                f.value = match &f.value {
+                    FormValue::Text(s) => FormValue::File(s.clone()),
+                    FormValue::File(s) => FormValue::Text(s.clone()),
+                };
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_binary_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('i') | KeyCode::Enter => {
+            app.popup = Popup::TextInput {
+                title: "Binary file path".to_string(),
+                state: single_line_state(&app.current.binary_file),
+                target: TextInputTarget::BinaryFilePath,
+            };
+        }
+        KeyCode::Char('d') => app.current.binary_file.clear(),
+        _ => {}
+    }
+}
+
 /// URL, Body and Response are all real edtui vim buffers now. `f` (format
 /// JSON body) and `F4` (open link, Response only) are our own extras layered
 /// on top; everything else goes straight to edtui's vim keymap.
@@ -336,6 +431,10 @@ fn open_header_form(app: &mut App, target: HeaderFormTarget, edit_index: Option<
             let (k, v) = &e.variables[i];
             (k.clone(), v.clone())
         }
+        (HeaderFormTarget::FormField, Some(i)) => {
+            let f = &app.current.form_fields[i];
+            (f.key.clone(), f.value.as_str().to_string())
+        }
         _ => (String::new(), String::new()),
     };
     app.popup = Popup::HeaderForm {
@@ -400,6 +499,10 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                                 Some(app.workspace.environments.last().unwrap().id);
                         }
                     }
+                    TextInputTarget::BinaryFilePath => {
+                        app.current.binary_file = name;
+                        return;
+                    }
                 }
                 app.persist();
                 return;
@@ -450,6 +553,17 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                         }
                         app.persist();
                     }
+                    HeaderFormTarget::FormField => match edit_index {
+                        Some(i) => {
+                            app.current.form_fields[i].key = k;
+                            // Keep whichever kind (Text/File) it already was
+                            // — only `t` in the Form Data list changes that.
+                            match &mut app.current.form_fields[i].value {
+                                FormValue::Text(s) | FormValue::File(s) => *s = v,
+                            }
+                        }
+                        None => app.current.form_fields.push(FormField::new_text(k, v)),
+                    },
                 }
                 return;
             }

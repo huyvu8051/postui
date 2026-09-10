@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Focus, HeaderFormField, Popup, SidebarEntry};
+use crate::model::BodyMode;
 
 fn focus_style(app: &App, focus: Focus) -> Style {
     if app.focus == focus {
@@ -260,18 +261,112 @@ fn draw_body_and_response(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    draw_body_only(f, app, cols[0]);
+    draw_body_pane(f, app, cols[0]);
     draw_response(f, app, cols[1]);
 }
 
-fn draw_body_only(f: &mut Frame, app: &mut App, area: Rect) {
-    let theme = editor_theme(
+/// The Body pane: a Raw/Form Data/Binary selector strip, then whatever that
+/// mode needs (see `draw_body_content`).
+fn draw_body_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+    draw_body_mode_selector(f, app, rows[0]);
+    draw_body_content(f, app, rows[1]);
+}
+
+fn draw_body_mode_selector(f: &mut Frame, app: &App, area: Rect) {
+    let selector = Paragraph::new(app.current.body_mode.as_str())
+        .alignment(Alignment::Center)
+        .style(focus_style(app, Focus::BodyMode))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style(app, Focus::BodyMode))
+                .title(" Body Type (h/l cycle) "),
+        );
+    f.render_widget(selector, area);
+}
+
+fn draw_body_content(f: &mut Frame, app: &mut App, area: Rect) {
+    match app.current.body_mode {
+        BodyMode::Raw => {
+            let theme = editor_theme(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(border_style(app, Focus::Body))
+                    .title(" Body (vim keys — i insert, hjkl move, f: format JSON) "),
+            );
+            f.render_widget(EditorView::new(&mut app.body_state).theme(theme), area);
+        }
+        BodyMode::FormData => draw_form_data(f, app, area),
+        BodyMode::Binary => draw_binary(f, app, area),
+    }
+}
+
+fn draw_form_data(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .current
+        .form_fields
+        .iter()
+        .map(|field| {
+            let enabled = if field.enabled { "[x]" } else { "[ ]" };
+            let kind = if field.value.is_file() { "File" } else { "Text" };
+            let style = if field.enabled {
+                Style::default()
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            ListItem::new(format!(
+                "{enabled} {}: {} <{kind}>",
+                field.key,
+                field.value.as_str()
+            ))
+            .style(style)
+        })
+        .collect();
+
+    let mut state = ratatui::widgets::ListState::default();
+    if !app.current.form_fields.is_empty() {
+        state.select(Some(app.form_field_index));
+    }
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style(app, Focus::Body))
+                .title(" Form Data (n: new, i: edit, d: delete, space: toggle, t: text/file) "),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    f.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_binary(f: &mut Frame, app: &App, area: Rect) {
+    let (text, style) = if app.current.binary_file.is_empty() {
+        (
+            "No file selected — press i or Enter to set a path".to_string(),
+            Style::default().fg(Color::DarkGray),
+        )
+    } else {
+        let exists = std::path::Path::new(&app.current.binary_file).is_file();
+        let marker = if exists { "✓" } else { "✗ not found" };
+        let color = if exists { Color::Green } else { Color::Red };
+        (
+            format!("{marker}  {}", app.current.binary_file),
+            Style::default().fg(color),
+        )
+    };
+
+    let paragraph = Paragraph::new(text).style(style).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(border_style(app, Focus::Body))
-            .title(" Body (vim keys — i insert, hjkl move, f: format JSON) "),
+            .title(" Binary file (i/Enter: set path, d: clear) "),
     );
-    f.render_widget(EditorView::new(&mut app.body_state).theme(theme), area);
+    f.render_widget(paragraph, area);
 }
 
 /// Render whichever pane is focused across the whole main area (`F3`),
@@ -284,7 +379,8 @@ fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
         Focus::Method | Focus::Url => draw_request_top(f, app, area),
         Focus::PathParams => draw_path_params(f, app, area),
         Focus::Headers => draw_headers(f, app, area),
-        Focus::Body => draw_body_only(f, app, area),
+        Focus::BodyMode => draw_body_mode_selector(f, app, area),
+        Focus::Body => draw_body_pane(f, app, area),
         Focus::Response => draw_response(f, app, area),
     }
 }
@@ -356,7 +452,7 @@ fn draw_header_form_popup(f: &mut Frame, key: &mut EditorState, value: &mut Edit
     f.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Header / Variable (Tab to switch field, Enter to confirm) "),
+            .title(" Key / Value (Tab to switch field, Enter to confirm) "),
         area,
     );
     let inner = Layout::default()

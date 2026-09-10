@@ -17,8 +17,9 @@ Requests, collections, and environments are persisted to
 - **Method / URL** (top right): request line. URL is a real vim buffer (`edtui`).
 - **Path Params**: auto-detected `:name` segments from the URL, per request.
 - **Headers**: request headers.
-- **Body / Response**: request body editor and the last response — both real
-  vim buffers. A JSON response body is auto-detected, pretty-printed, and
+- **Body / Response**: a Raw/Form Data/Binary type selector, the body editor
+  for whichever type is selected, and the last response. Raw body and
+  Response are real vim buffers. A JSON response body is auto-detected, pretty-printed, and
   syntax-highlighted (`edtui`'s built-in `syntect`-based highlighter); the
   response title shows ", JSON" when that kicked in. The same detector
   (`src/format.rs`) backs the Body panel's `f` pretty-print shortcut.
@@ -26,17 +27,20 @@ Requests, collections, and environments are persisted to
 
 ## Editing model
 
-**URL, Body, and Response are full `edtui` vim buffers** — real Normal/
-Insert/Visual modes, not a plain text box. While one of them is focused,
-*every* key goes to that buffer (including bare letters like `q`/`e`, which
-are global shortcuts everywhere else — `edtui`'s own Normal mode uses those
-for real vim motions). `Tab`/`Shift+Tab` always work to switch panes;
-`Ctrl+Enter`/`F5` (send) and `Ctrl+S` (save) always work too. To quit or
-open the environment manager, `Tab` to Sidebar/Headers/Path Params first.
+**URL, Response, and Body-in-Raw-mode are full `edtui` vim buffers** — real
+Normal/Insert/Visual modes, not a plain text box (Body in Form Data/Binary
+mode is a list instead — see "Body Type" below — and behaves like Headers).
+While a vim buffer is focused, *every* key goes to that buffer (including
+bare letters like `q`/`e`, which are global shortcuts everywhere else —
+`edtui`'s own Normal mode uses those for real vim motions). `Tab`/`Shift+Tab`
+always work to switch panes; `Ctrl+Enter`/`F5` (send) and `Ctrl+S` (save)
+always work too. To quit or open the environment manager, `Tab` to
+Sidebar/Headers/Path Params/Body Type/Body-in-Form-Data-or-Binary first.
 
-Small popups (new collection/request/environment name, header key/value,
-path param value) are **not** full vim buffers — they open ready to type
-into immediately and stay that way; `Enter` confirms, `Esc` cancels. Full
+Small popups (new collection/request/environment name, header/form-field
+key/value, path param value, binary file path) are **not** full vim
+buffers — they open ready to type into immediately and stay that way;
+`Enter` confirms, `Esc` cancels. Full
 vim editing there would be more surprising than useful for "type a name and
 hit Enter".
 
@@ -82,14 +86,43 @@ environment. Standard `edtui` vim keybindings apply (full list: run
 | `/pattern` `Enter` | Search; `n`/`N` next/previous match |
 | `u` / `Ctrl+r` | Undo / redo |
 
-Body-only: `f` (Normal mode) pretty-prints the body in place if it's valid
-JSON. Response-only: `F4` (Normal mode) opens the first `http(s)://` link on
-the cursor's line in your browser — not a vim thing, our own addition.
+Body-only (Raw mode, see below): `f` (Normal mode) pretty-prints the body in
+place if it's valid JSON. Response-only: `F4` (Normal mode) opens the first
+`http(s)://` link on the cursor's line in your browser — not a vim thing,
+our own addition.
 
 The **Response pane is always a live buffer** — no separate "enter/exit view
 mode" step, just focus it (`Tab`) and navigate. It's rebuilt fresh only when
 a *new* response arrives, so search/selection state naturally survives
 losing and regaining focus in between.
+
+### Body Type (Raw / Form Data / Binary)
+
+A small selector sits above the Body pane — `Tab` to it (right after
+Headers), `h`/`l` to cycle, like Method. It changes what the Body pane below
+it is and does:
+
+- **Raw** — the vim buffer described above. Free-form text, usually JSON.
+- **Form Data** (`multipart/form-data`) — a list, just like Headers:
+  | Key | Action |
+  |---|---|
+  | `n` | New field |
+  | `i` / `Enter` | Edit selected field's key/value |
+  | `d` | Delete selected field |
+  | `space` | Toggle field enabled/disabled |
+  | `t` | Toggle the value between **Text** and **File** (a path to upload) |
+
+  A field's value is always typed as plain text in the edit popup — `t` just
+  decides whether that string is sent as a literal value or read from disk
+  as a file at send time. `{{var}}` substitution applies to both the key and
+  the value (so a file path can use an environment variable too).
+- **Binary** — sends one file's raw bytes as the entire body. `i`/`Enter`
+  opens a popup to type the file path (pre-filled if one's already set);
+  `d` clears it. The pane shows a ✓/✗ existence check against disk.
+
+Switching modes doesn't lose data — the Raw text, Form Data fields, and
+Binary path are all kept independently, so flipping back to a previous mode
+shows what you had there.
 
 ### Path Params
 Postman-style path variables, e.g. `:tenantId` in

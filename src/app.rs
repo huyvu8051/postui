@@ -4,7 +4,7 @@ use edtui::{EditorEventHandler, EditorMode, EditorState, Lines};
 use ratatui::widgets::ListState;
 use uuid::Uuid;
 
-use crate::model::{Environment, Header, HistoryEntry, RequestItem, ResponseData, Workspace};
+use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, Workspace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -13,6 +13,10 @@ pub enum Focus {
     Url,
     PathParams,
     Headers,
+    /// The Raw/Form Data/Binary selector above the Body pane.
+    BodyMode,
+    /// What this pane shows/does depends on `RequestItem::body_mode` — see
+    /// `event::is_vim_editor_focus` and `ui::draw_body_content`.
     Body,
     Response,
 }
@@ -24,7 +28,8 @@ impl Focus {
             Focus::Method => Focus::Url,
             Focus::Url => Focus::PathParams,
             Focus::PathParams => Focus::Headers,
-            Focus::Headers => Focus::Body,
+            Focus::Headers => Focus::BodyMode,
+            Focus::BodyMode => Focus::Body,
             Focus::Body => Focus::Response,
             Focus::Response => Focus::Sidebar,
         }
@@ -37,17 +42,10 @@ impl Focus {
             Focus::Url => Focus::Method,
             Focus::PathParams => Focus::Url,
             Focus::Headers => Focus::PathParams,
-            Focus::Body => Focus::Headers,
+            Focus::BodyMode => Focus::Headers,
+            Focus::Body => Focus::BodyMode,
             Focus::Response => Focus::Body,
         }
-    }
-
-    /// Whether this pane is a full edtui vim buffer (as opposed to a plain
-    /// list/selector). Those panes hand every non-global key to edtui and
-    /// suppress the app's own bare-letter shortcuts (`q`, `e`, ...) while
-    /// focused — see the module docs in `event.rs`.
-    pub fn is_editor(self) -> bool {
-        matches!(self, Focus::Url | Focus::Body | Focus::Response)
     }
 }
 
@@ -62,6 +60,7 @@ pub enum TextInputTarget {
     NewCollectionName,
     NewRequestName(usize),
     NewEnvName,
+    BinaryFilePath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +73,7 @@ pub enum HeaderFormField {
 pub enum HeaderFormTarget {
     RequestHeader,
     EnvVariable(usize),
+    FormField,
 }
 
 pub enum Popup {
@@ -137,6 +137,7 @@ pub struct App {
     pub body_state: EditorState,
 
     pub header_index: usize,
+    pub form_field_index: usize,
     pub path_param_index: usize,
     pub response: Option<ResponseData>,
     pub last_error: Option<String>,
@@ -184,6 +185,7 @@ impl App {
             url_state,
             body_state,
             header_index: 0,
+            form_field_index: 0,
             path_param_index: 0,
             response: None,
             last_error: None,
@@ -278,6 +280,10 @@ impl App {
 
     pub fn selected_header_mut(&mut self) -> Option<&mut Header> {
         self.current.headers.get_mut(self.header_index)
+    }
+
+    pub fn selected_form_field_mut(&mut self) -> Option<&mut FormField> {
+        self.current.form_fields.get_mut(self.form_field_index)
     }
 
     /// Rebuild the Response pane's buffer from the current `response`/
