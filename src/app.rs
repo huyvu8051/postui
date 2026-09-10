@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use edtui::{EditorEventHandler, EditorMode, EditorState, Lines};
 use ratatui::widgets::ListState;
@@ -114,9 +114,20 @@ pub fn single_line_state(text: &str) -> EditorState {
     state
 }
 
+/// A request's unsaved, in-memory state: the edited fields plus its last
+/// response/error, keyed by `RequestItem::id` (stable across edits — only
+/// `Ctrl+S` writes it back to the collection on disk). Letting you switch
+/// away to another request and back without losing either.
+pub struct RequestDraft {
+    pub item: RequestItem,
+    pub response: Option<ResponseData>,
+    pub last_error: Option<String>,
+}
+
 pub struct App {
     pub workspace: Workspace,
     pub expanded: HashSet<Uuid>,
+    pub drafts: HashMap<Uuid, RequestDraft>,
 
     pub sidebar_index: usize,
     pub sidebar_state: ListState,
@@ -175,6 +186,7 @@ impl App {
         Self {
             workspace,
             expanded,
+            drafts: HashMap::new(),
             sidebar_index: 0,
             sidebar_state: ListState::default(),
             current: RequestItem::new("untitled"),
@@ -238,17 +250,53 @@ impl App {
     }
 
     pub fn load_request(&mut self, coll_idx: usize, req_idx: usize) {
+        self.stash_current_draft();
+
         if let Some(c) = self.workspace.collections.get(coll_idx) {
             if let Some(r) = c.requests.get(req_idx) {
-                self.current = r.clone();
+                match self.drafts.get(&r.id) {
+                    // Reopening a request visited earlier this session:
+                    // restore whatever was there, edited or not, including
+                    // its last response/error — not the on-disk copy.
+                    Some(draft) => {
+                        self.current = draft.item.clone();
+                        self.response = draft.response.clone();
+                        self.last_error = draft.last_error.clone();
+                    }
+                    None => {
+                        self.current = r.clone();
+                        self.response = None;
+                        self.last_error = None;
+                    }
+                }
                 self.current.sync_path_params();
                 self.source = Some((coll_idx, req_idx));
                 self.sync_editors_from_current();
                 self.header_index = 0;
+                self.form_field_index = 0;
                 self.path_param_index = 0;
+                self.refresh_response_view();
                 self.status_message = format!("Loaded '{}'", self.current.name);
             }
         }
+    }
+
+    /// Snapshot the currently-open request (edited or not) plus its last
+    /// response/error into `drafts`, keyed by its stable id. Call before
+    /// switching `current` to anything else.
+    fn stash_current_draft(&mut self) {
+        if self.source.is_none() {
+            return;
+        }
+        self.sync_current_from_editors();
+        self.drafts.insert(
+            self.current.id,
+            RequestDraft {
+                item: self.current.clone(),
+                response: self.response.clone(),
+                last_error: self.last_error.clone(),
+            },
+        );
     }
 
     pub fn save_current(&mut self) {

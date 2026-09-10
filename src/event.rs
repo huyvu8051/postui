@@ -175,12 +175,16 @@ fn handle_sidebar_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('d') => match entries[app.sidebar_index] {
             SidebarEntry::Collection(ci) => {
+                for r in &app.workspace.collections[ci].requests {
+                    app.drafts.remove(&r.id);
+                }
                 app.workspace.collections.remove(ci);
                 app.sidebar_index = app.sidebar_index.saturating_sub(1);
                 app.persist();
             }
             SidebarEntry::Request(ci, ri) => {
-                app.workspace.collections[ci].requests.remove(ri);
+                let removed = app.workspace.collections[ci].requests.remove(ri);
+                app.drafts.remove(&removed.id);
                 if app.source == Some((ci, ri)) {
                     app.source = None;
                 }

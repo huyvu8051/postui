@@ -64,6 +64,14 @@ hit Enter".
 | `A` | New collection |
 | `d` | Delete selected collection/request |
 
+Switching to another request and back doesn't lose anything: unsaved edits
+and the last response/error are kept in memory per request for the rest of
+the session, restored exactly as you left them — `Ctrl+S` is only needed to
+persist those edits to disk (`workspace.json`), not to avoid losing them
+while you work. (One edge case: if a request is still in flight when you
+switch away, its response lands wherever `current` is when it arrives, not
+necessarily back on the request that sent it.)
+
 ### Method
 `h`/`l` or `←`/`→` — cycle HTTP method.
 
