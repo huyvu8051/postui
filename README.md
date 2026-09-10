@@ -45,6 +45,7 @@ hit Enter".
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Cycle focus between panes |
+| `F3` | Maximize the focused pane full-screen; `F3` again to restore the layout |
 | `Ctrl+Enter` / `F5` | Send the current request |
 | `Ctrl+S` | Save the loaded request back to its collection |
 | `q` | Quit (Sidebar/Headers/Path Params focus only — see Editing model) |

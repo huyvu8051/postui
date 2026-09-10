@@ -75,6 +75,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         app.focus = app.focus.prev();
         return Action::None;
     }
+    if key.code == KeyCode::F(3) {
+        app.maximized = !app.maximized;
+        app.status_message = if app.maximized {
+            "Panel maximized — F3 to restore layout".into()
+        } else {
+            "Layout restored".into()
+        };
+        return Action::None;
+    }
 
     // The three edtui-backed panes (URL, Body, Response) own every other
     // key themselves — including bare letters like `q`/`e` that are global

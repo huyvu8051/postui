@@ -45,36 +45,40 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(f.area());
 
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
-        .split(root[0]);
+    if app.maximized {
+        draw_maximized(f, app, root[0]);
+    } else {
+        let main = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
+            .split(root[0]);
 
-    draw_sidebar(f, app, main[0]);
+        draw_sidebar(f, app, main[0]);
 
-    // Path params panel height grows with the param count (min 3 for the
-    // "none" message, capped so it can't crowd out headers/body).
-    let path_params_height = (app.current.path_params.len() as u16 + 2).clamp(3, 6);
+        // Path params panel height grows with the param count (min 3 for the
+        // "none" message, capped so it can't crowd out headers/body).
+        let path_params_height = (app.current.path_params.len() as u16 + 2).clamp(3, 6);
 
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(path_params_height),
-            Constraint::Min(0),
-        ])
-        .split(main[1]);
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(path_params_height),
+                Constraint::Min(0),
+            ])
+            .split(main[1]);
 
-    draw_request_top(f, app, right[0]);
-    draw_path_params(f, app, right[1]);
+        draw_request_top(f, app, right[0]);
+        draw_path_params(f, app, right[1]);
 
-    let bottom = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(right[2]);
+        let bottom = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(right[2]);
 
-    draw_headers(f, app, bottom[0]);
-    draw_body_and_response(f, app, bottom[1]);
+        draw_headers(f, app, bottom[0]);
+        draw_body_and_response(f, app, bottom[1]);
+    }
 
     draw_status(f, app, root[1]);
 
@@ -256,15 +260,33 @@ fn draw_body_and_response(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
+    draw_body_only(f, app, cols[0]);
+    draw_response(f, app, cols[1]);
+}
+
+fn draw_body_only(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = editor_theme(
         Block::default()
             .borders(Borders::ALL)
             .border_style(border_style(app, Focus::Body))
             .title(" Body (vim keys — i insert, hjkl move, f: format JSON) "),
     );
-    f.render_widget(EditorView::new(&mut app.body_state).theme(theme), cols[0]);
+    f.render_widget(EditorView::new(&mut app.body_state).theme(theme), area);
+}
 
-    draw_response(f, app, cols[1]);
+/// Render whichever pane is focused across the whole main area (`F3`),
+/// reusing each pane's normal single-panel renderer. `Method` piggybacks on
+/// `draw_request_top` (it shares a row with URL) since maximizing the tiny
+/// Method box on its own isn't useful.
+fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
+    match app.focus {
+        Focus::Sidebar => draw_sidebar(f, app, area),
+        Focus::Method | Focus::Url => draw_request_top(f, app, area),
+        Focus::PathParams => draw_path_params(f, app, area),
+        Focus::Headers => draw_headers(f, app, area),
+        Focus::Body => draw_body_only(f, app, area),
+        Focus::Response => draw_response(f, app, area),
+    }
 }
 
 /// The Response pane is a real edtui vim buffer at all times — no separate

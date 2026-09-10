@@ -125,6 +125,9 @@ pub struct App {
     pub source: Option<(usize, usize)>, // (collection_idx, request_idx) that `current` was loaded from
 
     pub focus: Focus,
+    /// When true, the focused pane fills the whole main area (no sidebar,
+    /// no other panes) — toggled with `F3`.
+    pub maximized: bool,
     /// Shared vim/emacs keymap for every edtui-backed field. Stateless
     /// besides the keymap itself — the actual editing state lives in each
     /// field's own `EditorState`.
@@ -176,6 +179,7 @@ impl App {
             current: RequestItem::new("untitled"),
             source: None,
             focus: Focus::Sidebar,
+            maximized: false,
             editor_events: EditorEventHandler::default(), // vim mode
             url_state,
             body_state,
