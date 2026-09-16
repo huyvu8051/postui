@@ -9,6 +9,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 crossterm = "0.29"
 dirs = "5"
 edtui = "0.11"
+mlua = { version = "0.9", features = ["lua54", "vendored", "serialize"] }
 open = "5"
 ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }

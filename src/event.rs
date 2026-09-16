@@ -2,8 +2,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use edtui::EditorMode;
 
 use crate::app::{
-    single_line_state, App, Focus, HeaderFormField, HeaderFormTarget, Popup, SidebarEntry,
-    TextInputTarget,
+    single_line_state, App, Focus, HeaderFormField, HeaderFormTarget, Popup, ScriptTab,
+    SidebarEntry, TextInputTarget,
 };
 use crate::model::{BodyMode, Collection, Environment, FormField, FormValue, Header, RequestItem};
 
@@ -14,7 +14,7 @@ use crate::model::{BodyMode, Collection, Environment, FormField, FormValue, Head
 /// mode — in `FormData`/`Binary` mode it's a list like Headers, not a vim
 /// buffer, so the app's own shortcuts should work there.
 fn is_vim_editor_focus(app: &App) -> bool {
-    matches!(app.focus, Focus::Url | Focus::Response)
+    matches!(app.focus, Focus::Url | Focus::Response | Focus::ScriptEditor)
         || (app.focus == Focus::Body && app.current.body_mode == BodyMode::Raw)
 }
 
@@ -54,6 +54,13 @@ pub fn handle_paste(app: &mut App, text: String) {
             app.editor_events.on_paste_event(text, &mut app.body_state)
         }
         Focus::Response => app.editor_events.on_paste_event(text, &mut app.response_state),
+        Focus::ScriptEditor => {
+            let state = match app.script_tab {
+                ScriptTab::Pre => &mut app.pre_script_state,
+                ScriptTab::Post => &mut app.post_script_state,
+            };
+            app.editor_events.on_paste_event(text, state);
+        }
         _ => {}
     }
 }
@@ -128,7 +135,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         Focus::BodyMode => handle_body_mode_key(app, key),
         // Only reached when body_mode != Raw (Raw is a vim buffer, handled above).
         Focus::Body => handle_body_field_key(app, key),
-        Focus::Url | Focus::Response => unreachable!("handled above"),
+        Focus::ScriptTab => handle_script_tab_key(app, key),
+        Focus::Url | Focus::Response | Focus::ScriptEditor => unreachable!("handled above"),
     }
 
     Action::None
@@ -266,6 +274,14 @@ fn handle_body_mode_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_script_tab_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('h') | KeyCode::Left => app.script_tab = app.script_tab.prev(),
+        KeyCode::Char('l') | KeyCode::Right => app.script_tab = app.script_tab.next(),
+        _ => {}
+    }
+}
+
 /// Dispatches to the Body pane's current non-Raw representation. (Raw mode
 /// never reaches here — it's a vim buffer, routed through
 /// `handle_editor_pane_key` instead.)
@@ -354,6 +370,10 @@ fn handle_editor_pane_key(app: &mut App, key: KeyEvent) -> Action {
         Focus::Url => &mut app.url_state,
         Focus::Body => &mut app.body_state,
         Focus::Response => &mut app.response_state,
+        Focus::ScriptEditor => match app.script_tab {
+            ScriptTab::Pre => &mut app.pre_script_state,
+            ScriptTab::Post => &mut app.post_script_state,
+        },
         _ => unreachable!(),
     };
     app.editor_events.on_key_event(key, state);

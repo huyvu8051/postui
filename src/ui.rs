@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, HeaderFormField, Popup, SidebarEntry};
+use crate::app::{App, Focus, HeaderFormField, Popup, ScriptTab, SidebarEntry};
 use crate::model::BodyMode;
 
 fn focus_style(app: &App, focus: Focus) -> Style {
@@ -258,11 +258,16 @@ fn draw_headers(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_body_and_response(f: &mut Frame, app: &mut App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
         .split(area);
 
     draw_body_pane(f, app, cols[0]);
-    draw_response(f, app, cols[1]);
+    draw_scripts_pane(f, app, cols[1]);
+    draw_response(f, app, cols[2]);
 }
 
 /// The Body pane: a Raw/Form Data/Binary selector strip, then whatever that
@@ -369,6 +374,64 @@ fn draw_binary(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+fn draw_scripts_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5), Constraint::Length(6)])
+        .split(area);
+    draw_script_tab_selector(f, app, rows[0]);
+    draw_script_editor(f, app, rows[1]);
+    draw_script_console(f, app, rows[2]);
+}
+
+fn draw_script_tab_selector(f: &mut Frame, app: &App, area: Rect) {
+    let label = match app.script_tab {
+        ScriptTab::Pre => "Pre-request",
+        ScriptTab::Post => "Post-response",
+    };
+    let selector = Paragraph::new(label)
+        .alignment(Alignment::Center)
+        .style(focus_style(app, Focus::ScriptTab))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style(app, Focus::ScriptTab))
+                .title(" Script (h/l cycle) "),
+        );
+    f.render_widget(selector, area);
+}
+
+fn draw_script_editor(f: &mut Frame, app: &mut App, area: Rect) {
+    let title = match app.script_tab {
+        ScriptTab::Pre => " Pre-request (Lua — pm.request, pm.environment, pm.console.log) ",
+        ScriptTab::Post => " Post-response (Lua — pm.response, pm.environment, pm.test, pm.console.log) ",
+    };
+    let theme = editor_theme(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style(app, Focus::ScriptEditor))
+            .title(title),
+    );
+    let state = match app.script_tab {
+        ScriptTab::Pre => &mut app.pre_script_state,
+        ScriptTab::Post => &mut app.post_script_state,
+    };
+    f.render_widget(EditorView::new(state).theme(theme), area);
+}
+
+fn draw_script_console(f: &mut Frame, app: &App, area: Rect) {
+    let text = if app.script_console.is_empty() {
+        "No script output yet.".to_string()
+    } else {
+        let tail_start = app.script_console.len().saturating_sub(4);
+        app.script_console[tail_start..].join("\n")
+    };
+    let paragraph = Paragraph::new(text)
+        .style(Style::default().fg(Color::DarkGray))
+        .block(Block::default().borders(Borders::ALL).title(" Console "));
+    f.render_widget(paragraph, area);
+}
+
 /// Render whichever pane is focused across the whole main area (`F3`),
 /// reusing each pane's normal single-panel renderer. `Method` piggybacks on
 /// `draw_request_top` (it shares a row with URL) since maximizing the tiny
@@ -381,6 +444,8 @@ fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
         Focus::Headers => draw_headers(f, app, area),
         Focus::BodyMode => draw_body_mode_selector(f, app, area),
         Focus::Body => draw_body_pane(f, app, area),
+        Focus::ScriptTab => draw_script_tab_selector(f, app, area),
+        Focus::ScriptEditor => draw_scripts_pane(f, app, area),
         Focus::Response => draw_response(f, app, area),
     }
 }

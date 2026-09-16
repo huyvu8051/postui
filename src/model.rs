@@ -174,6 +174,10 @@ pub struct RequestItem {
     /// none selected yet.
     #[serde(default)]
     pub binary_file: String,
+    #[serde(default)]
+    pub pre_request_script: String,
+    #[serde(default)]
+    pub post_response_script: String,
 }
 
 /// Names of `:paramName` path segments in `url`, in order of first
@@ -208,6 +212,8 @@ impl RequestItem {
             body_mode: BodyMode::default(),
             form_fields: Vec::new(),
             binary_file: String::new(),
+            pre_request_script: String::new(),
+            post_response_script: String::new(),
         }
     }
 

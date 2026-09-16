@@ -4,6 +4,7 @@ mod format;
 mod http;
 mod logger;
 mod model;
+mod script;
 mod storage;
 mod ui;
 
@@ -125,9 +126,20 @@ async fn run(
                 match result {
                     Ok(resp) => {
                         app.push_history(Some(resp.status));
+                        app.status_message = "Request completed".into();
+                        if !app.current.post_response_script.trim().is_empty() {
+                            let mut env = app.active_environment().cloned();
+                            let outcome =
+                                script::run_post_response(&app.current.post_response_script, &resp, &mut env);
+                            app.push_script_log(outcome.logs);
+                            app.replace_environment_matching_id(env);
+                            if let Some(err) = outcome.error {
+                                app.status_message =
+                                    format!("Request completed, but post-response script failed: {err}");
+                            }
+                        }
                         app.response = Some(resp);
                         app.last_error = None;
-                        app.status_message = "Request completed".into();
                     }
                     Err(e) => {
                         app.push_history(None);
@@ -157,10 +169,24 @@ fn trigger_send(app: &mut App, tx: mpsc::UnboundedSender<AppEvent>) {
         app.status_message = "URL is empty".into();
         return;
     }
+
+    let mut req = app.current.clone();
+    let mut env = app.active_environment().cloned();
+    if !req.pre_request_script.trim().is_empty() {
+        let pre_request_script = req.pre_request_script.clone();
+        let outcome = script::run_pre_request(&pre_request_script, &mut req, &mut env);
+        app.push_script_log(outcome.logs);
+        app.replace_environment_matching_id(env.clone());
+        if let Some(err) = outcome.error {
+            let msg = format!("Pre-request script failed: {err}");
+            app.status_message = msg.clone();
+            app.last_error = Some(msg);
+            return;
+        }
+    }
+
     app.loading = true;
     app.status_message = "Sending request...".into();
-    let req = app.current.clone();
-    let env = app.active_environment().cloned();
     tokio::spawn(async move {
         // `{:#}` renders the full anyhow cause chain ("top: caused by: root
         // cause"), not just the outermost message.

@@ -13,11 +13,10 @@ pub enum Focus {
     Url,
     PathParams,
     Headers,
-    /// The Raw/Form Data/Binary selector above the Body pane.
     BodyMode,
-    /// What this pane shows/does depends on `RequestItem::body_mode` — see
-    /// `event::is_vim_editor_focus` and `ui::draw_body_content`.
     Body,
+    ScriptTab,
+    ScriptEditor,
     Response,
 }
 
@@ -30,7 +29,9 @@ impl Focus {
             Focus::PathParams => Focus::Headers,
             Focus::Headers => Focus::BodyMode,
             Focus::BodyMode => Focus::Body,
-            Focus::Body => Focus::Response,
+            Focus::Body => Focus::ScriptTab,
+            Focus::ScriptTab => Focus::ScriptEditor,
+            Focus::ScriptEditor => Focus::Response,
             Focus::Response => Focus::Sidebar,
         }
     }
@@ -44,8 +45,30 @@ impl Focus {
             Focus::Headers => Focus::PathParams,
             Focus::BodyMode => Focus::Headers,
             Focus::Body => Focus::BodyMode,
-            Focus::Response => Focus::Body,
+            Focus::ScriptTab => Focus::Body,
+            Focus::ScriptEditor => Focus::ScriptTab,
+            Focus::Response => Focus::ScriptEditor,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptTab {
+    #[default]
+    Pre,
+    Post,
+}
+
+impl ScriptTab {
+    pub fn next(self) -> ScriptTab {
+        match self {
+            ScriptTab::Pre => ScriptTab::Post,
+            ScriptTab::Post => ScriptTab::Pre,
+        }
+    }
+
+    pub fn prev(self) -> ScriptTab {
+        self.next()
     }
 }
 
@@ -103,6 +126,8 @@ pub enum Popup {
     },
 }
 
+const SCRIPT_CONSOLE_LIMIT: usize = 50;
+
 /// A fresh single-line `EditorState` seeded with `text`, ready to type into
 /// immediately (mode forced to `Insert` — see the "Popup fields" note in
 /// `event.rs` for why we don't let these run edtui's full Normal-mode vim
@@ -146,6 +171,11 @@ pub struct App {
 
     pub url_state: EditorState,
     pub body_state: EditorState,
+
+    pub script_tab: ScriptTab,
+    pub pre_script_state: EditorState,
+    pub post_script_state: EditorState,
+    pub script_console: Vec<String>,
 
     pub header_index: usize,
     pub form_field_index: usize,
@@ -196,6 +226,10 @@ impl App {
             editor_events: EditorEventHandler::default(), // vim mode
             url_state,
             body_state,
+            script_tab: ScriptTab::default(),
+            pre_script_state: EditorState::default(),
+            post_script_state: EditorState::default(),
+            script_console: Vec::new(),
             header_index: 0,
             form_field_index: 0,
             path_param_index: 0,
@@ -234,9 +268,18 @@ impl App {
             .and_then(|id| self.workspace.environments.iter().find(|e| e.id == id))
     }
 
+    pub fn replace_environment_matching_id(&mut self, env: Option<Environment>) {
+        let Some(env) = env else { return };
+        if let Some(existing) = self.workspace.environments.iter_mut().find(|e| e.id == env.id) {
+            *existing = env;
+        }
+    }
+
     pub fn sync_current_from_editors(&mut self) {
         self.current.url = self.url_state.lines.to_string();
         self.current.body = self.body_state.lines.to_string();
+        self.current.pre_request_script = self.pre_script_state.lines.to_string();
+        self.current.post_response_script = self.post_script_state.lines.to_string();
         self.current.sync_path_params();
         if self.path_param_index >= self.current.path_params.len() {
             self.path_param_index = self.current.path_params.len().saturating_sub(1);
@@ -247,6 +290,18 @@ impl App {
         self.url_state = EditorState::new(Lines::from(self.current.url.as_str()));
         self.url_state.set_single_line(true);
         self.body_state = EditorState::new(Lines::from(self.current.body.as_str()));
+        self.pre_script_state = EditorState::new(Lines::from(self.current.pre_request_script.as_str()));
+        self.post_script_state = EditorState::new(Lines::from(self.current.post_response_script.as_str()));
+    }
+
+    pub fn push_script_log(&mut self, lines: Vec<String>) {
+        self.script_console.extend(lines);
+        self.drop_oldest_script_console_lines_past_limit();
+    }
+
+    fn drop_oldest_script_console_lines_past_limit(&mut self) {
+        let excess = self.script_console.len().saturating_sub(SCRIPT_CONSOLE_LIMIT);
+        self.script_console.drain(0..excess);
     }
 
     pub fn load_request(&mut self, coll_idx: usize, req_idx: usize) {
