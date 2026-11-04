@@ -51,9 +51,6 @@ async fn main() -> Result<()> {
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
-    // Ask the terminal to disambiguate modified keys (e.g. Ctrl+Enter vs Enter),
-    // if it supports the Kitty keyboard protocol. Many terminals (Terminal.app,
-    // default iTerm2) don't, so this is best-effort — F5 is the reliable fallback.
     let keyboard_enhancement = supports_keyboard_enhancement().unwrap_or(false);
     if keyboard_enhancement {
         execute!(
@@ -66,7 +63,6 @@ async fn main() -> Result<()> {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    // Blocking input reader thread.
     let input_tx = tx.clone();
     std::thread::spawn(move || loop {
         if let Ok(true) = term_event::poll(Duration::from_millis(100)) {
@@ -188,11 +184,13 @@ fn trigger_send(app: &mut App, tx: mpsc::UnboundedSender<AppEvent>) {
     app.loading = true;
     app.status_message = "Sending request...".into();
     tokio::spawn(async move {
-        // `{:#}` renders the full anyhow cause chain ("top: caused by: root
-        // cause"), not just the outermost message.
         let result = http::send_request(&req, env.as_ref())
             .await
-            .map_err(|e| format!("{e:#}"));
+            .map_err(full_cause_chain);
         let _ = tx.send(AppEvent::Response(result));
     });
+}
+
+fn full_cause_chain(e: anyhow::Error) -> String {
+    format!("{e:#}")
 }

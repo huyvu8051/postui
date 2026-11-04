@@ -32,23 +32,25 @@ Normal/Insert/Visual modes, not a plain text box (Body in Form Data/Binary
 mode is a list instead — see "Body Type" below — and behaves like Headers).
 While a vim buffer is focused, *every* key goes to that buffer (including
 bare letters like `q`/`e`, which are global shortcuts everywhere else —
-`edtui`'s own Normal mode uses those for real vim motions). `Tab`/`Shift+Tab`
-always work to switch panes; `Ctrl+Enter`/`F5` (send) and `Ctrl+S` (save)
-always work too. To quit or open the environment manager, `Tab` to
-Sidebar/Headers/Path Params/Body Type/Body-in-Form-Data-or-Binary first.
+`edtui`'s own Normal mode uses those for real vim motions). `Esc` in Normal mode
+leaves the buffer back to pane navigation (`hjkl`); `Ctrl+Enter`/`F5` (send) and
+`Ctrl+S` (save) always work too. To quit or open the environment manager,
+navigate to Sidebar/Headers/Path Params/Body Type/Body-in-Form-Data-or-Binary first.
 
-Small popups (new collection/request/environment name, header/form-field
-key/value, path param value, binary file path) are **not** full vim
-buffers — they open ready to type into immediately and stay that way;
-`Enter` confirms, `Esc` cancels. Full
-vim editing there would be more surprising than useful for "type a name and
-hit Enter".
+The key/value popup (env variable, request header, form-field) is a 90%×90%
+panel that works like the main UI: `hjkl` selects Key/Value, `Enter`/`i`
+edits that field as a vim buffer (opens in Normal mode), `Esc` in Normal
+returns to selection, `Ctrl+S`/`Ctrl+Enter` saves, `Esc` (while selecting)
+cancels. The single-input popups (new collection/request/environment name,
+binary file path) are vim buffers that open in Normal mode; `Enter`
+confirms, `Esc` in Normal cancels. The path-param popup stays a plain
+type-and-Enter box.
 
 ## Keybindings
 
 | Key | Action |
 |---|---|
-| `Tab` / `Shift+Tab` | Cycle focus between panes |
+| `h` `j` `k` `l` | Move focus between panes |
 | `F3` | Maximize the focused pane full-screen; `F3` again to restore the layout |
 | `Ctrl+Enter` / `F5` | Send the current request |
 | `Ctrl+S` | Save the loaded request back to its collection |
@@ -100,13 +102,13 @@ place if it's valid JSON. Response-only: `F4` (Normal mode) opens the first
 our own addition.
 
 The **Response pane is always a live buffer** — no separate "enter/exit view
-mode" step, just focus it (`Tab`) and navigate. It's rebuilt fresh only when
+mode" step, just focus it and navigate. It's rebuilt fresh only when
 a *new* response arrives, so search/selection state naturally survives
 losing and regaining focus in between.
 
 ### Body Type (Raw / Form Data / Binary)
 
-A small selector sits above the Body pane — `Tab` to it (right after
+A small selector sits above the Body pane — navigate to it (just below
 Headers), `h`/`l` to cycle, like Method. It changes what the Body pane below
 it is and does:
 

@@ -8,8 +8,6 @@ fn log_path() -> Option<PathBuf> {
     Some(dir.join("postui.log"))
 }
 
-/// Append a timestamped line to `~/…/postui/postui.log`. Best-effort — a
-/// logging failure must never crash or block the UI.
 pub fn log(context: &str, detail: &str) {
     let Some(path) = log_path() else { return };
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {

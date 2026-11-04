@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use edtui::{EditorEventHandler, EditorMode, EditorState, Lines};
-use ratatui::widgets::ListState;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 use uuid::Uuid;
 
 use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, Workspace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    Sidebar,
     Method,
     Url,
     PathParams,
@@ -21,35 +21,49 @@ pub enum Focus {
 }
 
 impl Focus {
-    pub fn next(self) -> Focus {
-        match self {
-            Focus::Sidebar => Focus::Method,
-            Focus::Method => Focus::Url,
-            Focus::Url => Focus::PathParams,
-            Focus::PathParams => Focus::Headers,
-            Focus::Headers => Focus::BodyMode,
-            Focus::BodyMode => Focus::Body,
-            Focus::Body => Focus::ScriptTab,
-            Focus::ScriptTab => Focus::ScriptEditor,
-            Focus::ScriptEditor => Focus::Response,
-            Focus::Response => Focus::Sidebar,
+    pub fn neighbor(self, dir: Direction) -> Option<Focus> {
+        use Direction::{Down, Left, Right, Up};
+        match (self, dir) {
+            (Focus::Method, Right) => Some(Focus::Url),
+            (Focus::Method, Down) => Some(Focus::PathParams),
+            (Focus::Url, Left) => Some(Focus::Method),
+            (Focus::Url, Down) => Some(Focus::PathParams),
+            (Focus::PathParams, Up) => Some(Focus::Method),
+            (Focus::PathParams, Down) => Some(Focus::Headers),
+            (Focus::Headers, Up) => Some(Focus::PathParams),
+            (Focus::Headers, Down) => Some(Focus::BodyMode),
+            (Focus::BodyMode, Up) => Some(Focus::Headers),
+            (Focus::BodyMode, Right) => Some(Focus::ScriptTab),
+            (Focus::BodyMode, Down) => Some(Focus::Body),
+            (Focus::Body, Up) => Some(Focus::BodyMode),
+            (Focus::Body, Right) => Some(Focus::ScriptEditor),
+            (Focus::ScriptTab, Left) => Some(Focus::BodyMode),
+            (Focus::ScriptTab, Right) => Some(Focus::Response),
+            (Focus::ScriptTab, Up) => Some(Focus::Headers),
+            (Focus::ScriptTab, Down) => Some(Focus::ScriptEditor),
+            (Focus::ScriptEditor, Left) => Some(Focus::Body),
+            (Focus::ScriptEditor, Right) => Some(Focus::Response),
+            (Focus::ScriptEditor, Up) => Some(Focus::ScriptTab),
+            (Focus::Response, Left) => Some(Focus::ScriptEditor),
+            (Focus::Response, Up) => Some(Focus::Headers),
+            _ => None,
         }
     }
+}
 
-    pub fn prev(self) -> Focus {
-        match self {
-            Focus::Sidebar => Focus::Response,
-            Focus::Method => Focus::Sidebar,
-            Focus::Url => Focus::Method,
-            Focus::PathParams => Focus::Url,
-            Focus::Headers => Focus::PathParams,
-            Focus::BodyMode => Focus::Headers,
-            Focus::Body => Focus::BodyMode,
-            Focus::ScriptTab => Focus::Body,
-            Focus::ScriptEditor => Focus::ScriptTab,
-            Focus::Response => Focus::ScriptEditor,
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelMode {
+    #[default]
+    Navigate,
+    Interact,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,6 +90,14 @@ impl ScriptTab {
 pub enum SidebarEntry {
     Collection(usize),
     Request(usize, usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeaderState {
+    #[default]
+    Idle,
+    AwaitingS,
+    AwaitingF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,26 +134,26 @@ pub enum Popup {
         field: HeaderFormField,
         edit_index: Option<usize>,
         target: HeaderFormTarget,
+        /// false = navigate between inputs with hjkl; true = typing into the focused input (vim).
+        interacting: bool,
     },
     EnvManager,
     EnvVarEditor {
         env_index: usize,
     },
-    /// Edit the value of an auto-detected `:name` path param. The key is
-    /// derived from the URL, so only the value is editable here.
     PathParamForm {
         name: String,
         value: EditorState,
         index: usize,
     },
+    CollectionFinder {
+        query: EditorState,
+        selected: usize,
+    },
 }
 
 const SCRIPT_CONSOLE_LIMIT: usize = 50;
 
-/// A fresh single-line `EditorState` seeded with `text`, ready to type into
-/// immediately (mode forced to `Insert` — see the "Popup fields" note in
-/// `event.rs` for why we don't let these run edtui's full Normal-mode vim
-/// keymap).
 pub fn single_line_state(text: &str) -> EditorState {
     let mut state = EditorState::new(Lines::from(text));
     state.set_single_line(true);
@@ -139,14 +161,25 @@ pub fn single_line_state(text: &str) -> EditorState {
     state
 }
 
-/// A request's unsaved, in-memory state: the edited fields plus its last
-/// response/error, keyed by `RequestItem::id` (stable across edits — only
-/// `Ctrl+S` writes it back to the collection on disk). Letting you switch
-/// away to another request and back without losing either.
+/// Single-line vim input that starts in Normal mode (press `i`/`a` to type).
+pub fn vim_line_state(text: &str) -> EditorState {
+    let mut state = EditorState::new(Lines::from(text));
+    state.set_single_line(true);
+    state.mode = EditorMode::Normal;
+    state
+}
+
+#[derive(Clone)]
 pub struct RequestDraft {
     pub item: RequestItem,
     pub response: Option<ResponseData>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestSource {
+    pub collection_index: usize,
+    pub request_index: usize,
 }
 
 pub struct App {
@@ -154,19 +187,14 @@ pub struct App {
     pub expanded: HashSet<Uuid>,
     pub drafts: HashMap<Uuid, RequestDraft>,
 
-    pub sidebar_index: usize,
-    pub sidebar_state: ListState,
+    pub leader: LeaderState,
 
     pub current: RequestItem,
-    pub source: Option<(usize, usize)>, // (collection_idx, request_idx) that `current` was loaded from
+    pub source: Option<RequestSource>,
 
     pub focus: Focus,
-    /// When true, the focused pane fills the whole main area (no sidebar,
-    /// no other panes) — toggled with `F3`.
+    pub panel_mode: PanelMode,
     pub maximized: bool,
-    /// Shared vim/emacs keymap for every edtui-backed field. Stateless
-    /// besides the keymap itself — the actual editing state lives in each
-    /// field's own `EditorState`.
     pub editor_events: EditorEventHandler,
 
     pub url_state: EditorState,
@@ -183,11 +211,6 @@ pub struct App {
     pub response: Option<ResponseData>,
     pub last_error: Option<String>,
 
-    /// The Response pane's buffer — always populated (rebuilt whenever a
-    /// new response or error arrives), always a real edtui vim buffer:
-    /// `hjkl`, `gg`/`G`, `/` search + `n`/`N`, `v` visual + `y` yank (system
-    /// clipboard), all native to edtui. Syntax-highlighted at render time
-    /// when the body is JSON.
     pub response_state: EditorState,
     pub response_is_json: bool,
 
@@ -217,13 +240,13 @@ impl App {
             workspace,
             expanded,
             drafts: HashMap::new(),
-            sidebar_index: 0,
-            sidebar_state: ListState::default(),
+            leader: LeaderState::default(),
             current: RequestItem::new("untitled"),
             source: None,
-            focus: Focus::Sidebar,
+            focus: Focus::Method,
+            panel_mode: PanelMode::default(),
             maximized: false,
-            editor_events: EditorEventHandler::default(), // vim mode
+            editor_events: EditorEventHandler::default(),
             url_state,
             body_state,
             script_tab: ScriptTab::default(),
@@ -239,13 +262,19 @@ impl App {
             response_is_json: false,
             loading: false,
             status_message: String::from(
-                "Tab: switch focus | a: new request | A: new collection | Ctrl+Enter: send | e: environments | q: quit",
+                "hjkl: select pane | Enter: focus, Esc: unfocus | space s f: find/open request | Ctrl+Enter: send | e: environments | q: quit",
             ),
             history: Vec::new(),
             env_index: 0,
             env_var_index: 0,
             popup: Popup::None,
             should_quit: false,
+        }
+    }
+
+    pub fn move_focus(&mut self, dir: Direction) {
+        if let Some(next) = self.focus.neighbor(dir) {
+            self.focus = next;
         }
     }
 
@@ -260,6 +289,32 @@ impl App {
             }
         }
         entries
+    }
+
+    pub fn collection_finder_matches(&self, query: &str) -> Vec<SidebarEntry> {
+        if query.trim().is_empty() {
+            return self.flatten_sidebar();
+        }
+        self.fuzzy_ranked_requests(query)
+    }
+
+    fn fuzzy_ranked_requests(&self, query: &str) -> Vec<SidebarEntry> {
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, SidebarEntry)> = self
+            .workspace
+            .collections
+            .iter()
+            .enumerate()
+            .flat_map(|(ci, c)| c.requests.iter().enumerate().map(move |(ri, r)| (ci, ri, c, r)))
+            .filter_map(|(ci, ri, c, r)| {
+                let label = format!("{} / {} {}", c.name, r.method.as_str(), r.name);
+                matcher
+                    .fuzzy_match(&label, query)
+                    .map(|score| (score, SidebarEntry::Request(ci, ri)))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.into_iter().map(|(_, entry)| entry).collect()
     }
 
     pub fn active_environment(&self) -> Option<&Environment> {
@@ -307,38 +362,42 @@ impl App {
     pub fn load_request(&mut self, coll_idx: usize, req_idx: usize) {
         self.stash_current_draft();
 
-        if let Some(c) = self.workspace.collections.get(coll_idx) {
-            if let Some(r) = c.requests.get(req_idx) {
-                match self.drafts.get(&r.id) {
-                    // Reopening a request visited earlier this session:
-                    // restore whatever was there, edited or not, including
-                    // its last response/error — not the on-disk copy.
-                    Some(draft) => {
-                        self.current = draft.item.clone();
-                        self.response = draft.response.clone();
-                        self.last_error = draft.last_error.clone();
-                    }
-                    None => {
-                        self.current = r.clone();
-                        self.response = None;
-                        self.last_error = None;
-                    }
-                }
-                self.current.sync_path_params();
-                self.source = Some((coll_idx, req_idx));
-                self.sync_editors_from_current();
-                self.header_index = 0;
-                self.form_field_index = 0;
-                self.path_param_index = 0;
-                self.refresh_response_view();
-                self.status_message = format!("Loaded '{}'", self.current.name);
-            }
+        let Some(item) = self
+            .workspace
+            .collections
+            .get(coll_idx)
+            .and_then(|c| c.requests.get(req_idx))
+            .cloned()
+        else {
+            return;
+        };
+
+        match self.drafts.get(&item.id).cloned() {
+            Some(draft) => self.restore_draft(draft),
+            None => self.restore_saved_item(item),
         }
+        self.current.sync_path_params();
+        self.source = Some(RequestSource { collection_index: coll_idx, request_index: req_idx });
+        self.sync_editors_from_current();
+        self.header_index = 0;
+        self.form_field_index = 0;
+        self.path_param_index = 0;
+        self.refresh_response_view();
+        self.status_message = format!("Loaded '{}'", self.current.name);
     }
 
-    /// Snapshot the currently-open request (edited or not) plus its last
-    /// response/error into `drafts`, keyed by its stable id. Call before
-    /// switching `current` to anything else.
+    fn restore_draft(&mut self, draft: RequestDraft) {
+        self.current = draft.item;
+        self.response = draft.response;
+        self.last_error = draft.last_error;
+    }
+
+    fn restore_saved_item(&mut self, item: RequestItem) {
+        self.current = item;
+        self.response = None;
+        self.last_error = None;
+    }
+
     fn stash_current_draft(&mut self) {
         if self.source.is_none() {
             return;
@@ -356,11 +415,11 @@ impl App {
 
     pub fn save_current(&mut self) {
         self.sync_current_from_editors();
-        let name = match self.source.and_then(|(ci, ri)| {
+        let name = match self.source.and_then(|source| {
             self.workspace
                 .collections
-                .get_mut(ci)
-                .and_then(|c| c.requests.get_mut(ri))
+                .get_mut(source.collection_index)
+                .and_then(|c| c.requests.get_mut(source.request_index))
         }) {
             Some(r) => {
                 let id = r.id;
@@ -370,7 +429,7 @@ impl App {
             }
             None => {
                 self.status_message =
-                    "No collection request loaded — use 'a' in the sidebar to create one first"
+                    "No collection request loaded — open <space> s f and Ctrl+N to create one first"
                         .into();
                 return;
             }
@@ -389,12 +448,6 @@ impl App {
         self.current.form_fields.get_mut(self.form_field_index)
     }
 
-    /// Rebuild the Response pane's buffer from the current `response`/
-    /// `last_error`. Called whenever either changes. The buffer is a normal
-    /// edtui vim buffer the whole time — there's no separate "enter/exit
-    /// view mode" step; you just focus the pane and navigate. Search/
-    /// selection state naturally survives losing and regaining focus
-    /// because we only rebuild here, on a new response — not on refocus.
     pub fn refresh_response_view(&mut self) {
         let text = match (&self.response, &self.last_error) {
             (Some(resp), _) => {
@@ -429,8 +482,6 @@ impl App {
         self.response_state = EditorState::new(Lines::from(text));
     }
 
-    /// Persist the workspace to disk, surfacing any failure (disk full,
-    /// permissions, etc.) in the status bar and log instead of swallowing it.
     pub fn persist(&mut self) {
         if let Err(e) = crate::storage::save(&self.workspace) {
             let detail = format!("{e:#}");

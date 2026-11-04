@@ -1,4 +1,4 @@
-use edtui::{EditorState, EditorTheme, EditorView, SyntaxHighlighter};
+use edtui::{EditorMode, EditorState, EditorTheme, EditorView, SyntaxHighlighter};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -6,38 +6,51 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, Focus, HeaderFormField, Popup, ScriptTab, SidebarEntry};
+use crate::app::{App, Focus, HeaderFormField, PanelMode, Popup, ScriptTab, SidebarEntry};
 use crate::model::BodyMode;
 
+fn panel_color(app: &App, focus: Focus) -> Option<Color> {
+    if app.focus != focus {
+        return None;
+    }
+    Some(match app.panel_mode {
+        PanelMode::Navigate => Color::Blue,
+        PanelMode::Interact => Color::Green,
+    })
+}
+
 fn focus_style(app: &App, focus: Focus) -> Style {
-    if app.focus == focus {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
+    match panel_color(app, focus) {
+        Some(color) => Style::default().fg(color).add_modifier(Modifier::BOLD),
+        None => Style::default(),
     }
 }
 
 fn border_style(app: &App, focus: Focus) -> Style {
-    if app.focus == focus {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
+    match panel_color(app, focus) {
+        Some(color) => Style::default().fg(color),
+        None => Style::default().fg(Color::DarkGray),
     }
 }
 
-/// A themed block for an edtui pane. Two overrides from `EditorTheme`'s
-/// defaults:
-/// - `base`: edtui defaults to a hardcoded black background/white text,
-///   which would paint a solid black box regardless of the terminal's own
-///   theme. We use a transparent style instead, matching every other widget
-///   in the app (which all inherit the terminal's background).
-/// - our own status bar already carries key hints, so every edtui view
-///   hides its own built-in status line to stay compact.
 fn editor_theme<'a>(block: Block<'a>) -> EditorTheme<'a> {
     EditorTheme::default()
         .base(Style::default())
         .block(block)
         .hide_status_line()
+}
+
+fn mode_label(mode: EditorMode) -> &'static str {
+    match mode {
+        EditorMode::Normal => "NORMAL",
+        EditorMode::Insert => "INSERT",
+        EditorMode::Visual => "VISUAL",
+        EditorMode::Search => "SEARCH",
+    }
+}
+
+fn vim_editor_theme<'a>(block: Block<'a>) -> EditorTheme<'a> {
+    EditorTheme::default().base(Style::default()).block(block)
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -49,33 +62,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.maximized {
         draw_maximized(f, app, root[0]);
     } else {
+        let path_params_height = path_params_panel_height(app);
+
         let main = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
-            .split(root[0]);
-
-        draw_sidebar(f, app, main[0]);
-
-        // Path params panel height grows with the param count (min 3 for the
-        // "none" message, capped so it can't crowd out headers/body).
-        let path_params_height = (app.current.path_params.len() as u16 + 2).clamp(3, 6);
-
-        let right = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
                 Constraint::Length(path_params_height),
                 Constraint::Min(0),
             ])
-            .split(main[1]);
+            .split(root[0]);
 
-        draw_request_top(f, app, right[0]);
-        draw_path_params(f, app, right[1]);
+        draw_request_top(f, app, main[0]);
+        draw_path_params(f, app, main[1]);
 
         let bottom = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-            .split(right[2]);
+            .split(main[2]);
 
         draw_headers(f, app, bottom[0]);
         draw_body_and_response(f, app, bottom[1]);
@@ -83,17 +87,29 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_status(f, app, root[1]);
 
+    if matches!(app.popup, Popup::CollectionFinder { .. }) {
+        draw_collection_finder_popup(f, app);
+        return;
+    }
+
     match &mut app.popup {
         Popup::None => {}
         Popup::TextInput { title, state, .. } => draw_text_input_popup(f, title, state),
-        Popup::HeaderForm { key, value, field, .. } => draw_header_form_popup(f, key, value, *field),
+        Popup::HeaderForm { key, value, field, interacting, .. } => {
+            draw_header_form_popup(f, key, value, *field, *interacting)
+        }
         Popup::EnvManager => draw_env_manager_popup(f, app.workspace.environments.as_slice(), app.workspace.active_environment, app.env_index),
         Popup::EnvVarEditor { env_index } => {
             let env_index = *env_index;
             draw_env_var_popup(f, app.workspace.environments.as_slice(), env_index, app.env_var_index)
         }
         Popup::PathParamForm { name, value, .. } => draw_path_param_form_popup(f, name, value),
+        Popup::CollectionFinder { .. } => unreachable!("handled above"),
     }
+}
+
+fn path_params_panel_height(app: &App) -> u16 {
+    (app.current.path_params.len() as u16 + 2).clamp(3, 6)
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
@@ -107,9 +123,30 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
-    let entries = app.flatten_sidebar();
-    let items: Vec<ListItem> = entries
+fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
+    let (selected, query_text) = match &app.popup {
+        Popup::CollectionFinder { query, selected } => (*selected, query.lines.to_string()),
+        _ => return,
+    };
+    let matches = app.collection_finder_matches(&query_text);
+    let active_env_name = app.active_environment().map(|e| e.name.clone());
+
+    let area = centered_rect(90, 24, f.area());
+    f.render_widget(Clear, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
+        .split(area);
+
+    if let Popup::CollectionFinder { query, .. } = &mut app.popup {
+        let theme = editor_theme(Block::default().borders(Borders::ALL).title(
+            " Find (type to filter — ^N/^P/↑↓: move, Enter: open/expand, ^R: new request, ^A: new collection, ^D: delete, Esc: close) ",
+        ));
+        f.render_widget(EditorView::new(query).theme(theme).single_line(true), rows[0]);
+    }
+
+    let items: Vec<ListItem> = matches
         .iter()
         .map(|e| match e {
             SidebarEntry::Collection(ci) => {
@@ -125,28 +162,21 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    app.sidebar_state.select(if entries.is_empty() {
-        None
-    } else {
-        Some(app.sidebar_index)
-    });
+    let mut list_state = ratatui::widgets::ListState::default();
+    if !matches.is_empty() {
+        list_state.select(Some(selected));
+    }
 
-    let title = if let Some(env) = app.active_environment() {
-        format!(" Collections [env: {}] ", env.name)
-    } else {
-        " Collections ".to_string()
+    let title = match active_env_name {
+        Some(name) => format!(" Collections [env: {name}] "),
+        None => " Collections ".to_string(),
     };
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style(app, Focus::Sidebar))
-                .title(title),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
 
-    f.render_stateful_widget(list, area, &mut app.sidebar_state);
+    f.render_stateful_widget(list, rows[1], &mut list_state);
 }
 
 fn draw_request_top(f: &mut Frame, app: &mut App, area: Rect) {
@@ -248,7 +278,7 @@ fn draw_headers(f: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style(app, Focus::Headers))
-                .title(" Headers (n: new, i: edit, d: delete, space: toggle) "),
+                .title(" Headers (n: new, i: edit, d: delete, x: toggle) "),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
@@ -270,8 +300,6 @@ fn draw_body_and_response(f: &mut Frame, app: &mut App, area: Rect) {
     draw_response(f, app, cols[2]);
 }
 
-/// The Body pane: a Raw/Form Data/Binary selector strip, then whatever that
-/// mode needs (see `draw_body_content`).
 fn draw_body_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -297,7 +325,7 @@ fn draw_body_mode_selector(f: &mut Frame, app: &App, area: Rect) {
 fn draw_body_content(f: &mut Frame, app: &mut App, area: Rect) {
     match app.current.body_mode {
         BodyMode::Raw => {
-            let theme = editor_theme(
+            let theme = vim_editor_theme(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style(app, Focus::Body))
@@ -342,7 +370,7 @@ fn draw_form_data(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style(app, Focus::Body))
-                .title(" Form Data (n: new, i: edit, d: delete, space: toggle, t: text/file) "),
+                .title(" Form Data (n: new, i: edit, d: delete, x: toggle, t: text/file) "),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
@@ -406,7 +434,7 @@ fn draw_script_editor(f: &mut Frame, app: &mut App, area: Rect) {
         ScriptTab::Pre => " Pre-request (Lua — pm.request, pm.environment, pm.console.log) ",
         ScriptTab::Post => " Post-response (Lua — pm.response, pm.environment, pm.test, pm.console.log) ",
     };
-    let theme = editor_theme(
+    let theme = vim_editor_theme(
         Block::default()
             .borders(Borders::ALL)
             .border_style(border_style(app, Focus::ScriptEditor))
@@ -416,7 +444,11 @@ fn draw_script_editor(f: &mut Frame, app: &mut App, area: Rect) {
         ScriptTab::Pre => &mut app.pre_script_state,
         ScriptTab::Post => &mut app.post_script_state,
     };
-    f.render_widget(EditorView::new(state).theme(theme), area);
+    let mut view = EditorView::new(state).theme(theme);
+    if let Ok(highlighter) = SyntaxHighlighter::new("dracula", "lua") {
+        view = view.syntax_highlighter(Some(highlighter));
+    }
+    f.render_widget(view, area);
 }
 
 fn draw_script_console(f: &mut Frame, app: &App, area: Rect) {
@@ -432,13 +464,8 @@ fn draw_script_console(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Render whichever pane is focused across the whole main area (`F3`),
-/// reusing each pane's normal single-panel renderer. `Method` piggybacks on
-/// `draw_request_top` (it shares a row with URL) since maximizing the tiny
-/// Method box on its own isn't useful.
 fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
     match app.focus {
-        Focus::Sidebar => draw_sidebar(f, app, area),
         Focus::Method | Focus::Url => draw_request_top(f, app, area),
         Focus::PathParams => draw_path_params(f, app, area),
         Focus::Headers => draw_headers(f, app, area),
@@ -450,13 +477,6 @@ fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// The Response pane is a real edtui vim buffer at all times — no separate
-/// "enter/exit view mode" step. `hjkl`, `gg`/`G`, `/` search + `n`/`N`, `v`
-/// visual + `y` yank (system clipboard) are all native to edtui. `F4` (open
-/// a link on the cursor's line) is our own addition, handled in `event.rs`.
-/// Search/selection state naturally survives losing and regaining focus
-/// because the buffer is only rebuilt on a new response (`refresh_response_view`),
-/// never on refocus.
 fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
     let title = if app.loading {
         " Response (sending...) ".to_string()
@@ -474,13 +494,11 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
 
     let border_color = if app.last_error.is_some() {
         Color::Red
-    } else if app.focus == Focus::Response {
-        Color::Cyan
     } else {
-        Color::DarkGray
+        panel_color(app, Focus::Response).unwrap_or(Color::DarkGray)
     };
 
-    let theme = editor_theme(
+    let theme = vim_editor_theme(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
@@ -501,51 +519,67 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_text_input_popup(f: &mut Frame, title: &str, state: &mut EditorState) {
-    let area = centered_rect(60, 3, f.area());
+    let area = centered_rect(60, 5, f.area());
     f.render_widget(Clear, area);
     let theme = editor_theme(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {title} (Enter to confirm, Esc to cancel) ")),
+            .title(format!(
+                " {title} [{}] (Enter: confirm, Esc: normal/cancel) ",
+                mode_label(state.mode)
+            )),
     );
     f.render_widget(EditorView::new(state).theme(theme).single_line(true), area);
 }
 
-fn draw_header_form_popup(f: &mut Frame, key: &mut EditorState, value: &mut EditorState, field: HeaderFormField) {
-    let area = centered_rect(80, 12, f.area());
+fn draw_header_form_popup(
+    f: &mut Frame,
+    key: &mut EditorState,
+    value: &mut EditorState,
+    field: HeaderFormField,
+    interacting: bool,
+) {
+    let height = (f.area().height as u32 * 9 / 10) as u16;
+    let width = (f.area().width as u32 * 9 / 10) as u16;
+    let area = centered_rect(width, height, f.area());
     f.render_widget(Clear, area);
     f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Key / Value (Tab to switch field, Enter to confirm) "),
+        Block::default().borders(Borders::ALL).title(if interacting {
+            " Key / Value — editing (Esc: back to navigate, Ctrl+S: save) "
+        } else {
+            " Key / Value (hjkl: select, Enter/i: edit, Ctrl+S: save, Esc: cancel) "
+        }),
         area,
     );
     let inner = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([Constraint::Length(4), Constraint::Length(4)])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let key_border = if field == HeaderFormField::Key {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
+    let border_for = |selected: bool| {
+        if !selected {
+            Style::default().fg(Color::DarkGray)
+        } else if interacting {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default().fg(Color::Blue)
+        }
     };
+
     let key_theme = editor_theme(
-        Block::default().borders(Borders::ALL).border_style(key_border).title(" Key "),
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_for(field == HeaderFormField::Key))
+            .title(format!(" Key [{}] ", mode_label(key.mode))),
     );
     f.render_widget(EditorView::new(key).theme(key_theme).single_line(true), inner[0]);
 
-    let value_border = if field == HeaderFormField::Value {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default()
-    };
     let value_theme = editor_theme(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(value_border)
-            .title(" Value "),
+            .border_style(border_for(field == HeaderFormField::Value))
+            .title(format!(" Value [{}] ", mode_label(value.mode))),
     );
     f.render_widget(EditorView::new(value).theme(value_theme).single_line(true), inner[1]);
 }

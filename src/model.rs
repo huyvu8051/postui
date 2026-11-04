@@ -75,17 +75,11 @@ impl Header {
     }
 }
 
-/// Which of the mutually-exclusive body representations a request sends.
-/// Mirrors Postman's Raw / Form Data / Binary body tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BodyMode {
-    /// Plain text (often JSON) — `RequestItem::body`, sent as-is.
     #[default]
     Raw,
-    /// `multipart/form-data` — `RequestItem::form_fields`, each a text value
-    /// or a file to upload.
     FormData,
-    /// A single file's raw bytes as the whole body — `RequestItem::binary_file`.
     Binary,
 }
 
@@ -111,8 +105,6 @@ impl BodyMode {
     }
 }
 
-/// One `multipart/form-data` field: either a literal text value or a file
-/// read from disk at send time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FormValue {
     Text(String),
@@ -120,9 +112,6 @@ pub enum FormValue {
 }
 
 impl FormValue {
-    /// The raw string content, regardless of which kind this is — the
-    /// key/value edit popup only ever edits this string; `t` in the Form
-    /// Data list toggles which kind it's wrapped in.
     pub fn as_str(&self) -> &str {
         match self {
             FormValue::Text(s) | FormValue::File(s) => s,
@@ -157,21 +146,14 @@ pub struct RequestItem {
     pub name: String,
     pub method: Method,
     pub url: String,
-    /// Path variables, e.g. `:tenantId` in `{{baseUrl}}/:tenantId/baskets`.
-    /// Auto-derived from `url` (see `sync_path_params`) — key order and
-    /// membership follow the URL, only the values are hand-edited.
     #[serde(default)]
     pub path_params: Vec<(String, String)>,
     pub headers: Vec<Header>,
-    /// Raw body text. Only sent when `body_mode` is `Raw`, but always kept
-    /// around (so switching modes and back doesn't lose it).
     pub body: String,
     #[serde(default)]
     pub body_mode: BodyMode,
     #[serde(default)]
     pub form_fields: Vec<FormField>,
-    /// Path to the file sent as the whole body in `Binary` mode. Empty means
-    /// none selected yet.
     #[serde(default)]
     pub binary_file: String,
     #[serde(default)]
@@ -180,9 +162,6 @@ pub struct RequestItem {
     pub post_response_script: String,
 }
 
-/// Names of `:paramName` path segments in `url`, in order of first
-/// appearance, deduplicated. Only a `:` that starts a whole `/`-delimited
-/// segment counts, so `https://host:8080/path` yields no params.
 pub fn extract_path_param_names(url: &str) -> Vec<String> {
     let mut names = Vec::new();
     for segment in url.split('/') {
@@ -217,10 +196,6 @@ impl RequestItem {
         }
     }
 
-    /// Reconcile `path_params` with whatever `:name` segments are currently
-    /// in `url`: keep values for params still referenced, drop params no
-    /// longer referenced, append newly-referenced ones with an empty value —
-    /// in URL order. Call after any edit to `url`.
     pub fn sync_path_params(&mut self) {
         let names = extract_path_param_names(&self.url);
         let mut synced = Vec::with_capacity(names.len());
@@ -236,11 +211,6 @@ impl RequestItem {
         self.path_params = synced;
     }
 
-    /// Substitute `:name` path segments in `url` using this request's
-    /// `path_params` values.
-    /// `resolve` substitutes `{{var}}` in a path param's own value, so a
-    /// value like `{{tenantId}}` works the same way it does in the URL,
-    /// headers, or body — not just a literal string.
     pub fn resolve_url(&self, url: &str, resolve: &impl Fn(&str) -> String) -> String {
         url.split('/')
             .map(|segment| {
@@ -290,7 +260,6 @@ impl Environment {
         }
     }
 
-    /// Substitute {{var}} occurrences using this environment's variables.
     pub fn resolve(&self, input: &str) -> String {
         let mut out = input.to_string();
         for (k, v) in &self.variables {

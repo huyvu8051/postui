@@ -58,9 +58,6 @@ pub async fn send_request(req: &RequestItem, env: Option<&Environment>) -> Resul
     })
 }
 
-/// Attach whichever body representation `req.body_mode` selects. `resolve`
-/// substitutes `{{var}}` (and is also applied to file paths, so a path can
-/// itself use an environment variable, e.g. `{{fixtures_dir}}/avatar.png`).
 async fn apply_body(
     builder: reqwest::RequestBuilder,
     req: &RequestItem,
