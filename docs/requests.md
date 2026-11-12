@@ -78,6 +78,25 @@ The Response pane shows status, timing, headers and body. JSON bodies are
 pretty-printed and highlighted. It is a vim buffer: `gg`/`G`, `/search`,
 `v`…`y` to copy, `F4` opens the first link on the cursor line.
 
+### Large responses (light mode)
+
+Bodies over 1 MB are shown in light mode: the Response pane loads only the
+first 1 MB, raw (not pretty-printed or highlighted) and without undo, and the
+title says `LIGHT MODE: first 1.0 MB of 4.7 MB`. A fully pretty-printed buffer
+would take roughly twenty times the body size in memory. To see everything,
+from the Response pane in Navigate mode:
+
+- `o` opens the whole body, pretty-printed if it's JSON, in `$PAGER` (default
+  `less`; e.g. `export PAGER="less -S"`). Quit the pager to return.
+- `S` saves the body exactly as received; it suggests a file in your
+  Downloads folder named after the request.
+
+Both keys work for any response, not only large ones.
+
+Independently of size, lines longer than 1000 characters (minified JSON or
+HTML, base64 fields) are split for display, and the title says `long lines
+split`; `o` and `S` still give you the original.
+
 ### Response history
 
 Every response (or error) is kept per request: the last 30 per request, 1000

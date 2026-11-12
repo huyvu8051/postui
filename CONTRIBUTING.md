@@ -40,6 +40,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+For changes to rendering, drafts, response history or persistence, also run
+`scripts/audit.sh` (macOS/Linux): it stresses postui with large responses and
+bodies and fails if it gets stuck at high CPU.
+
 ## Code layout
 
 [docs/architecture.md](docs/architecture.md) maps the modules and explains the

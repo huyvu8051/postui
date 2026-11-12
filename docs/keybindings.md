@@ -53,6 +53,8 @@ pane **and enter it**; vim buffers open in Normal mode.
 | Script | `[` / `]` | Switch Pre-request / Post-response |
 | Response | `[` / `]` | Older / newer response from this request's history |
 | Response | `x` | Run the post-response script on the response on screen |
+| Response | `o` | Open the whole body (pretty-printed JSON) in `$PAGER` (default `less`) |
+| Response | `S` | Save the body, as received, to a file (asks for the path) |
 
 ## Vim buffers
 

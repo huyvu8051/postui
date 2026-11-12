@@ -784,8 +784,20 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
         " Response (sending...) ".to_string()
     } else if app.last_error.is_some() {
         format!(" Response{counter} — request failed — {hint}")
+    } else if let (Some(r), Some(total)) = (&app.response, app.response_light) {
+        format!(
+            " Response{counter} — {} ({} ms) — LIGHT MODE: start of {} · o: pager, S: save — {hint}",
+            r.status,
+            r.duration_ms,
+            crate::app::human_size(total)
+        )
     } else if let Some(r) = &app.response {
-        let kind = if app.response_is_json { ", JSON" } else { "" };
+        let kind = match (app.response_is_json, app.response_wrapped) {
+            (true, true) => ", JSON, long lines split",
+            (true, false) => ", JSON",
+            (false, true) => ", long lines split",
+            (false, false) => "",
+        };
         format!(
             " Response{counter} — {} ({} ms{kind}) — {hint}hjkl gg/G /search v y F4 ",
             r.status, r.duration_ms

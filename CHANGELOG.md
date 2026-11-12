@@ -33,6 +33,9 @@ First public release candidate (0.1.0).
 - JSON pretty-printing and syntax highlighting; `F4` opens links from the
   response.
 - `scripts/bench.sh` to measure memory and CPU.
+- Light mode for responses over 1 MB: the Response pane shows the first 1 MB
+  raw, without highlighting or undo; `o` opens the whole body in `$PAGER` and
+  `S` saves it to a file (both available for any response).
 
 ### Fixed
 
@@ -41,6 +44,8 @@ First public release candidate (0.1.0).
 - "Sending..." in the Response pane shows only on the request being sent, not
   on every request you open while it's in flight.
 - Resizing the terminal redraws immediately instead of on the next key press.
+- A response with a very long line (minified JSON/HTML, a large base64 field)
+  no longer freezes the UI at 100% CPU: long lines are split for display.
 
 ### Changed
 
@@ -48,3 +53,7 @@ First public release candidate (0.1.0).
   only when viewed; `drafts.json` no longer stores responses and isn't rewritten
   when nothing changed; undo history per buffer is capped at ~2 million
   characters; opening a request no longer copies its draft.
+- Opening requests and changing tabs no longer rewrite `workspace.json` each
+  time; those changes are written with the next autosave (about a second
+  later) and on quit. Saves, creating/deleting, environments and quick slots
+  are still written immediately.

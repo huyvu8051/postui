@@ -5,6 +5,7 @@ mod format;
 mod http;
 mod logger;
 mod model;
+mod pager;
 mod script;
 mod session;
 mod storage;
@@ -81,9 +82,16 @@ async fn main() -> Result<()> {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
+    // Paused while an external pager owns the terminal (see pager.rs).
+    let input_paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let input_tx = tx.clone();
+    let paused = input_paused.clone();
     std::thread::spawn(move || {
         loop {
+            if paused.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
             let app_event = match term_event::poll(Duration::from_millis(100)) {
                 Ok(false) => Some(AppEvent::Tick),
                 Ok(true) => match term_event::read() {
@@ -94,7 +102,11 @@ async fn main() -> Result<()> {
                     Ok(Event::Resize(_, _)) => Some(AppEvent::Resize),
                     _ => None,
                 },
-                Err(_) => None,
+                Err(_) => {
+                    // e.g. the terminal went away; don't spin on a failing read
+                    std::thread::sleep(Duration::from_millis(100));
+                    None
+                }
             };
             if let Some(app_event) = app_event
                 && input_tx.send(app_event).is_err()
@@ -104,7 +116,15 @@ async fn main() -> Result<()> {
         }
     });
 
-    let result = run(&mut terminal, &mut app, &tx, &mut rx).await;
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &tx,
+        &mut rx,
+        &input_paused,
+        keyboard_enhancement,
+    )
+    .await;
 
     disable_raw_mode()?;
     if keyboard_enhancement {
@@ -126,6 +146,8 @@ async fn run(
     app: &mut App,
     tx: &mpsc::UnboundedSender<AppEvent>,
     rx: &mut mpsc::UnboundedReceiver<AppEvent>,
+    input_paused: &std::sync::atomic::AtomicBool,
+    keyboard_enhancement: bool,
 ) -> Result<()> {
     terminal.draw(|f| ui::draw(f, app))?;
 
@@ -194,6 +216,9 @@ async fn run(
                 }
                 app.deliver_response(&sent, response, error);
             }
+        }
+        if let Some(path) = app.pending_pager.take() {
+            app.status_message = pager::run(terminal, input_paused, keyboard_enhancement, &path)?;
         }
         if app.should_quit {
             app.save_session();

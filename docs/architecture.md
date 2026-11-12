@@ -36,6 +36,7 @@ HTTP task (reqwest)      ──► AppEvent::Response ────────�
 | `script.rs` | Sandboxed Lua runtime and the `pm` API |
 | `http.rs` | Building and sending the request (substitution, body types) |
 | `format.rs` | JSON pretty-printing |
+| `pager.rs` | Hands the terminal to `$PAGER` and takes it back (`o` in the Response pane) |
 | `logger.rs` | Append-only error log |
 | `test_support.rs` | Test helpers (isolated storage) |
 
@@ -48,7 +49,9 @@ HTTP task (reqwest)      ──► AppEvent::Response ────────�
   request on screen; every other edited request lives in `App::drafts`
   (`RequestDraft`, including its editor buffers so undo survives). `is_dirty`
   compares a draft with the saved copy in the workspace.
-- **Persistence**: `App::persist()` writes `workspace.json`;
+- **Persistence**: `App::persist()` writes `workspace.json` now; `persist_later()`
+  marks it for the next autosave (used for recent requests and tab changes, which
+  happen on every request switch);
   `save_session()` writes `drafts.json` (skipped when unchanged) and is called
   from the debounced autosave and on quit.
 - **Response history** is an index: `App::response_history` holds

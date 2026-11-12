@@ -114,6 +114,7 @@ pub enum TextInputTarget {
     NewRequestName(usize),
     NewEnvName,
     BinaryFilePath,
+    SaveResponseBody,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +201,13 @@ const HISTORY_LIMIT: usize = 500;
 const RESPONSES_PER_REQUEST: usize = 30;
 const RESPONSES_TOTAL: usize = 1000;
 const RESPONSE_BODY_LIMIT: usize = 2 * 1024 * 1024;
+/// Bodies larger than this are shown in "light mode": only this much, raw, without
+/// highlighting or undo. The full body is a keypress away (`o` pager, `S` save).
+pub const LIGHT_MODE_BYTES: usize = 1024 * 1024;
+/// Longest line the Response pane gets. edtui's rendering cost grows faster than
+/// linearly with line length (a 1M-char line takes seconds per frame), so longer
+/// lines (minified JSON/HTML, base64 fields) are split for display.
+const VIEW_MAX_LINE_CHARS: usize = 1000;
 /// Autosave drafts this long after the last change…
 const SESSION_SAVE_IDLE: Duration = Duration::from_secs(1);
 /// …or at the latest this long after the first unsaved change, even while typing.
@@ -259,6 +267,12 @@ pub struct App {
     pub response_view: Option<usize>,
     /// The past response being viewed, read from disk when stepping with `[` / `]`.
     pub viewed_response: Option<ResponseRecord>,
+    /// Full body size when the response on screen is shown in light mode (truncated).
+    pub response_light: Option<usize>,
+    /// Some lines of the response on screen were split for display.
+    pub response_wrapped: bool,
+    /// A file the main loop should open in `$PAGER` (set by `o` in the Response pane).
+    pub pending_pager: Option<std::path::PathBuf>,
 
     /// Requests with a send in flight (count, in case one is sent twice).
     pub in_flight: HashMap<Uuid, usize>,
@@ -280,6 +294,9 @@ pub struct App {
 
     /// Hash of the drafts.json content last written, to skip unchanged autosaves.
     last_session_hash: Option<u64>,
+    /// workspace.json has changes (recent requests, open tabs) waiting for the next
+    /// autosave; see `persist_later`.
+    workspace_dirty: bool,
 }
 
 impl App {
@@ -325,6 +342,9 @@ impl App {
             response_history: HashMap::new(),
             response_view: None,
             viewed_response: None,
+            response_light: None,
+            response_wrapped: false,
+            pending_pager: None,
             in_flight: HashMap::new(),
             status_message: String::from(
                 "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | space e: environments | q: quit",
@@ -337,6 +357,7 @@ impl App {
             session_changes: None,
             var_menu: None,
             last_session_hash: None,
+            workspace_dirty: false,
         }
     }
 
@@ -661,7 +682,7 @@ impl App {
             }
         }
         self.tab_index = pos.min(self.workspace.open_tabs.len().saturating_sub(1));
-        self.persist();
+        self.persist_later();
     }
 
     pub fn load_request(&mut self, coll_idx: usize, req_idx: usize) {
@@ -704,7 +725,7 @@ impl App {
         if !self.workspace.open_tabs.contains(&self.current.id) {
             self.workspace.open_tabs.push(self.current.id);
         }
-        self.persist();
+        self.persist_later();
         self.status_message = format!("Loaded '{}'", self.current.name);
     }
 
@@ -813,6 +834,8 @@ impl App {
             (Some(_), Some(past)) => (&past.response, &past.error),
             _ => (&self.response, &self.last_error),
         };
+        self.response_light = None;
+        self.response_wrapped = false;
         let text = match (response, last_error) {
             (Some(resp), _) => {
                 let mut out = String::new();
@@ -823,9 +846,31 @@ impl App {
                     out.push('\n');
                 }
                 out.push('\n');
-                let pretty = crate::format::pretty_json(&resp.body);
-                self.response_is_json = pretty.is_some();
-                out.push_str(&pretty.unwrap_or_else(|| resp.body.clone()));
+                let body = if resp.body.len() > LIGHT_MODE_BYTES {
+                    // Light mode: a fully pretty-printed, highlighted multi-MB buffer costs
+                    // ~20x the body in memory, so show only the start and offer the rest.
+                    self.response_is_json = false;
+                    self.response_light = Some(resp.body.len());
+                    if looks_like_json(&resp.body) {
+                        crate::format::pretty_json_prefix(&resp.body, LIGHT_MODE_BYTES)
+                    } else {
+                        let cut = floor_char_boundary(&resp.body, LIGHT_MODE_BYTES);
+                        resp.body[..cut].to_string()
+                    }
+                } else {
+                    let pretty = crate::format::pretty_json(&resp.body);
+                    self.response_is_json = pretty.is_some();
+                    pretty.unwrap_or_else(|| resp.body.clone())
+                };
+                let (body, wrapped) = split_long_lines(body, VIEW_MAX_LINE_CHARS);
+                self.response_wrapped = wrapped;
+                out.push_str(&body);
+                if let Some(total) = self.response_light {
+                    out.push_str(&format!(
+                        "\n\n── light mode: showing the start of {} — o: open all in $PAGER, S: save to file ──\n",
+                        human_size(total)
+                    ));
+                }
                 out
             }
             (None, Some(err)) => {
@@ -846,7 +891,10 @@ impl App {
         self.response_state = EditorState::new(Lines::from(text));
     }
 
+    /// Write workspace.json now. Use for changes the user would be upset to lose
+    /// (saves, creating/deleting, environments, quick slots).
     pub fn persist(&mut self) {
+        self.workspace_dirty = false; // this write includes any pending changes
         if let Err(e) = crate::storage::save(&self.workspace) {
             let detail = format!("{e:#}");
             crate::logger::log("workspace save failed", &detail);
@@ -1060,14 +1108,7 @@ impl App {
     /// is in the editor now, unsaved edits included) against the response on screen —
     /// a past one when browsing history with `[` / `]`, otherwise the latest.
     pub fn run_post_script_on_shown_response(&mut self) {
-        let shown = match self.response_view {
-            Some(_) => self
-                .viewed_response
-                .as_ref()
-                .and_then(|r| r.response.clone()),
-            None => self.response.clone(),
-        };
-        let Some(resp) = shown else {
+        let Some(resp) = self.shown_response().cloned() else {
             self.status_message =
                 "No response on screen to run the post-response script against".into();
             return;
@@ -1095,6 +1136,78 @@ impl App {
         self.status_message = match outcome.error {
             Some(err) => format!("Post-response script failed: {err}"),
             None => format!("Post-response script ran on {label}"),
+        };
+    }
+
+    /// The response on screen: the past one being viewed, otherwise the latest.
+    pub fn shown_response(&self) -> Option<&ResponseData> {
+        match self.response_view {
+            Some(_) => self.viewed_response.as_ref()?.response.as_ref(),
+            None => self.response.as_ref(),
+        }
+    }
+
+    /// `o` in the Response pane: write the whole body (pretty-printed if it's JSON) to a
+    /// temp file and ask the main loop to open it in `$PAGER`.
+    pub fn open_shown_response_in_pager(&mut self) {
+        let Some(resp) = self.shown_response() else {
+            self.status_message = "No response body to open".into();
+            return;
+        };
+        let (text, ext) = match crate::format::pretty_json(&resp.body) {
+            Some(pretty) => (pretty, "json"),
+            None => (resp.body.clone(), "txt"),
+        };
+        let path = std::env::temp_dir().join(format!("postui-response-{}.{ext}", Uuid::new_v4()));
+        match std::fs::write(&path, text) {
+            Ok(()) => self.pending_pager = Some(path),
+            Err(e) => {
+                self.status_message = format!("Couldn't write a temp file for the pager: {e}")
+            }
+        }
+    }
+
+    /// Suggested path for `S`: the Downloads folder (or home), named after the request.
+    pub fn default_response_save_path(&self) -> String {
+        let dir = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let name: String = self
+            .current
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let is_json = self
+            .shown_response()
+            .is_some_and(|r| crate::format::pretty_json(&r.body).is_some());
+        let file = format!(
+            "{name}-{}.{}",
+            chrono::Local::now().format("%Y%m%d-%H%M%S"),
+            if is_json { "json" } else { "txt" }
+        );
+        dir.join(file).display().to_string()
+    }
+
+    /// `S` in the Response pane (after confirming the path): write the body as received.
+    pub fn save_shown_response(&mut self, path: &str) {
+        let Some(body) = self.shown_response().map(|r| r.body.clone()) else {
+            self.status_message = "No response body to save".into();
+            return;
+        };
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().map_or_else(|| path.into(), |h| h.join(rest)),
+            None => std::path::PathBuf::from(path),
+        };
+        self.status_message = match std::fs::write(&path, &body) {
+            Ok(()) => format!("Saved {} to {}", human_size(body.len()), path.display()),
+            Err(e) => format!("Couldn't save to {}: {e}", path.display()),
         };
     }
 
@@ -1205,9 +1318,23 @@ impl App {
     }
 
     /// Write drafts.json, unless its content is unchanged since the last write.
+    /// Write workspace.json with the next autosave (about a second after the user
+    /// stops, at most ~5 s) or on quit. For bookkeeping that changes on every request
+    /// switch (recent requests, open tabs, tab order), so switching tabs doesn't
+    /// rewrite a multi-MB file each time.
+    pub fn persist_later(&mut self) {
+        self.workspace_dirty = true;
+        self.mark_session_changed();
+    }
+
+    /// The autosave (debounced ticks, and on quit): pending workspace changes, then
+    /// drafts.json if its content changed.
     pub fn save_session(&mut self) {
         use std::hash::{Hash, Hasher};
         self.session_changes = None;
+        if self.workspace_dirty {
+            self.persist();
+        }
         let json = match serde_json::to_string(&self.session_snapshot()) {
             Ok(json) => json,
             Err(e) => {
@@ -1257,6 +1384,51 @@ impl App {
         if let Some((ci, ri)) = last.and_then(|id| self.find_request(id)) {
             self.load_request(ci, ri);
         }
+    }
+}
+
+/// Largest char boundary at or below `max` (str::floor_char_boundary is unstable).
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    let mut cut = max.min(s.len());
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
+}
+
+fn looks_like_json(body: &str) -> bool {
+    matches!(body.trim_start().chars().next(), Some('{' | '['))
+}
+
+/// Split lines longer than `max` chars into `max`-char pieces. Returns the text and
+/// whether anything was split.
+fn split_long_lines(text: String, max: usize) -> (String, bool) {
+    if !text.lines().any(|l| l.len() > max) {
+        return (text, false); // byte length is an upper bound on chars: fast path
+    }
+    let mut out = String::with_capacity(text.len() + text.len() / max + 1);
+    let mut split = false;
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        for (j, c) in line.chars().enumerate() {
+            if j > 0 && j % max == 0 {
+                out.push('\n');
+                split = true;
+            }
+            out.push(c);
+        }
+    }
+    (out, split)
+}
+
+/// "1.0 MB", "512 KB", "12 B".
+pub fn human_size(bytes: usize) -> String {
+    match bytes {
+        b if b >= 1024 * 1024 => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+        b if b >= 1024 => format!("{} KB", b / 1024),
+        b => format!("{b} B"),
     }
 }
 
@@ -1503,6 +1675,39 @@ mod tests {
     }
 
     #[test]
+    fn switching_requests_defers_the_workspace_write_to_the_autosave() {
+        let _storage = isolated_storage();
+        let (ws, a_id, b_id) = two_request_workspace();
+        let path = dirs::data_dir()
+            .unwrap()
+            .join("postui")
+            .join("workspace.json");
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        app.load_request(0, 1);
+        assert!(
+            !path.exists(),
+            "opening requests doesn't write workspace.json right away"
+        );
+        assert!(
+            app.session_save_due() || app.session_changes.is_some(),
+            "an autosave is scheduled"
+        );
+
+        app.save_session(); // what the debounced tick (or quit) does
+        let saved = crate::storage::load().unwrap();
+        assert_eq!(saved.open_tabs, vec![a_id, b_id]);
+        assert_eq!(saved.recent_requests.first(), Some(&b_id));
+
+        // Important changes still go to disk immediately.
+        app.assign_slot(a_id, 4);
+        assert_eq!(
+            crate::storage::load().unwrap().quick_slots.get(&4),
+            Some(&a_id)
+        );
+    }
+
+    #[test]
     fn unchanged_session_is_not_rewritten() {
         let _storage = isolated_storage();
         let (ws, _, _) = two_request_workspace();
@@ -1515,6 +1720,110 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         app.save_session(); // nothing changed
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), first);
+    }
+
+    fn big_json(bytes: usize) -> ResponseData {
+        let item = "{\"k\": \"0123456789abcdef\"},";
+        let body = format!("[{}{{}}]", item.repeat(bytes / item.len()));
+        ResponseData {
+            status: 200,
+            headers: vec![],
+            body,
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn large_responses_use_light_mode_and_small_ones_are_pretty() {
+        let _storage = isolated_storage();
+        let (ws, _, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        let sent = app.current.clone();
+
+        app.deliver_response(&sent, Some(big_json(3 * LIGHT_MODE_BYTES)), None);
+        let total = app.response.as_ref().unwrap().body.len();
+        assert_eq!(app.response_light, Some(total));
+        assert!(!app.response_is_json, "no highlighting in light mode");
+        let shown = app.response_state.lines.to_string();
+        assert!(
+            shown.len() < LIGHT_MODE_BYTES + 1024,
+            "only the start is loaded"
+        );
+        assert!(shown.contains("light mode: showing the start of"));
+        assert!(
+            shown.lines().count() > 1000,
+            "formatted into many lines, not one huge line"
+        );
+
+        app.deliver_response(&sent, Some(resp(200)), None);
+        assert_eq!(app.response_light, None);
+    }
+
+    /// edtui renders very long lines in superlinear time (a 1M-char line hung the UI),
+    /// so the Response pane must never get one, whatever the body looks like.
+    #[test]
+    fn response_pane_never_gets_very_long_lines() {
+        let _storage = isolated_storage();
+        let (ws, _, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        let sent = app.current.clone();
+        let bodies = [
+            "a".repeat(900_000),              // minified, not JSON, < 1 MB
+            "b".repeat(3 * LIGHT_MODE_BYTES), // same, light mode
+            format!("{{\"file\": \"{}\"}}", "c".repeat(600_000)), // JSON with a huge string
+            big_json(3 * LIGHT_MODE_BYTES).body, // big compact JSON
+        ];
+        for body in bodies {
+            let r = ResponseData {
+                status: 200,
+                headers: vec![],
+                body,
+                duration_ms: 1,
+            };
+            app.deliver_response(&sent, Some(r), None);
+            let longest = app
+                .response_state
+                .lines
+                .to_string()
+                .lines()
+                .map(|l| l.chars().count())
+                .max();
+            assert!(
+                longest.unwrap_or(0) <= VIEW_MAX_LINE_CHARS,
+                "line of {longest:?} chars"
+            );
+        }
+    }
+
+    #[test]
+    fn save_and_pager_get_the_whole_body() {
+        let _storage = isolated_storage();
+        let (ws, _, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        let sent = app.current.clone();
+        let big = big_json(2 * LIGHT_MODE_BYTES);
+        app.deliver_response(&sent, Some(big.clone()), None);
+
+        let dir = std::env::temp_dir().join(format!("postui-save-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("body.json");
+        app.save_shown_response(target.to_str().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            big.body,
+            "saved as received"
+        );
+        assert!(app.default_response_save_path().ends_with(".json"));
+
+        app.open_shown_response_in_pager();
+        let pager_file = app.pending_pager.take().expect("pager requested");
+        let text = std::fs::read_to_string(&pager_file).unwrap();
+        assert!(text.len() > big.body.len(), "pretty-printed, not truncated");
+        let _ = std::fs::remove_file(pager_file);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

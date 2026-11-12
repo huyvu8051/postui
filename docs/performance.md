@@ -38,6 +38,20 @@ What the numbers say:
 Run `scripts/bench.sh` yourself to reproduce or compare (macOS and Linux;
 needs `python3`, `ps` and `script`).
 
+Since these numbers were taken, responses over 1 MB are shown in light mode
+(see [requests](requests.md#large-responses-light-mode)), which keeps the same
+session at about 35 MB after one ~5 MB response and about 60 MB after nine.
+
+## Stress audit
+
+`scripts/audit.sh` drives postui through the scenarios that caused trouble
+before: a 5 MB single-line JSON response, a 900 KB single-line text response,
+tab switching, hundreds of edits in 290 KB bodies (undo history), several large
+drafts, and repeated large responses. It prints RSS, CPU time and file sizes per
+step, samples CPU every 2 s, and exits non-zero if postui looks stuck (a
+watchdog kills it after 3 minutes). Run it before merging changes to rendering,
+drafts, history or persistence.
+
 ## Compared with GUI clients
 
 We have not measured GUI clients on the same machine. Published figures vary

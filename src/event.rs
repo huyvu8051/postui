@@ -158,6 +158,18 @@ fn handle_navigate_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('x') if app.focus == Focus::Response => {
             app.run_post_script_on_shown_response()
         }
+        KeyCode::Char('o') if app.focus == Focus::Response => app.open_shown_response_in_pager(),
+        KeyCode::Char('S') if app.focus == Focus::Response => {
+            if app.shown_response().is_none() {
+                app.status_message = "No response body to save".into();
+            } else {
+                app.popup = Popup::TextInput {
+                    title: "Save response body to".to_string(),
+                    state: vim_line_state(&app.default_response_save_path()),
+                    target: TextInputTarget::SaveResponseBody,
+                };
+            }
+        }
         _ => {}
     }
 }
@@ -317,7 +329,7 @@ fn move_tab(app: &mut App, down: bool) {
     }
     app.workspace.open_tabs.swap(i, j);
     app.tab_index = j;
-    app.persist();
+    app.persist_later();
 }
 
 /// The key after `m` in the tabs sidebar: 1-9 assigns the selected tab to that
@@ -558,6 +570,10 @@ fn handle_editor_pane_key(app: &mut App, key: KeyEvent) -> Action {
             _ => unreachable!("URL and raw Body are var inputs"),
         };
         app.editor_events.on_key_event(key, state);
+        // Light mode keeps no undo history: each step would copy the whole buffer.
+        if app.focus == Focus::Response && app.response_light.is_some() {
+            app.response_state.set_undo_history(&[], &[]);
+        }
     }
 
     if app.focus == Focus::Url {
@@ -741,6 +757,10 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                     }
                     TextInputTarget::BinaryFilePath => {
                         app.current.binary_file = name;
+                        return;
+                    }
+                    TextInputTarget::SaveResponseBody => {
+                        app.save_shown_response(name.trim());
                         return;
                     }
                 }
