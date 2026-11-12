@@ -13,8 +13,8 @@
 //! single `u` undoes them together with the typed text.
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use edtui::{EditorEventHandler, EditorMode, EditorState, RowIndex};
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 
 /// An open completion menu; `selected` indexes [`candidates`].
 #[derive(Debug, Default, Clone, Copy)]
@@ -61,11 +61,16 @@ pub fn handle_key(
 
     events.on_key_event(key, state);
 
-    if state.mode == EditorMode::Insert && key.code == KeyCode::Char('{') && auto_close_braces(state) {
+    if state.mode == EditorMode::Insert
+        && key.code == KeyCode::Char('{')
+        && auto_close_braces(state)
+    {
         *menu = Some(VarMenu::default());
     }
     match menu {
-        Some(_) if state.mode != EditorMode::Insert || prefix_at_cursor(state).is_none() => *menu = None,
+        Some(_) if state.mode != EditorMode::Insert || prefix_at_cursor(state).is_none() => {
+            *menu = None
+        }
         Some(open) => open.selected = 0, // the filter text changed
         None => {}
     }
@@ -80,7 +85,12 @@ enum MenuKey {
     NotMine,
 }
 
-fn handle_menu_key(state: &mut EditorState, menu: &mut VarMenu, vars: &[(String, String)], key: KeyEvent) -> MenuKey {
+fn handle_menu_key(
+    state: &mut EditorState,
+    menu: &mut VarMenu,
+    vars: &[(String, String)],
+    key: KeyEvent,
+) -> MenuKey {
     let matches = candidates(vars, &prefix_at_cursor(state).unwrap_or_default());
     if key.code == KeyCode::Down || is_ctrl(key, 'n') {
         menu.selected = (menu.selected + 1).min(matches.len().saturating_sub(1));
@@ -124,7 +134,10 @@ pub fn prefix_at_cursor(state: &EditorState) -> Option<String> {
     let before = &line[..state.cursor.col.min(line.len())];
     let open = before.windows(2).rposition(|w| w == ['{', '{'])?;
     let typed = &before[open + 2..];
-    if typed.iter().any(|c| matches!(c, '{' | '}') || c.is_whitespace()) {
+    if typed
+        .iter()
+        .any(|c| matches!(c, '{' | '}') || c.is_whitespace())
+    {
         return None;
     }
     Some(typed.iter().collect())
@@ -151,7 +164,8 @@ fn delete_empty_pair(state: &mut EditorState) -> bool {
     let Some(line) = current_line_mut(state) else {
         return false;
     };
-    let empty_pair = col >= 2 && line[col - 2..col] == ['{', '{'] && line[col..].starts_with(&['}', '}']);
+    let empty_pair =
+        col >= 2 && line[col - 2..col] == ['{', '{'] && line[col..].starts_with(&['}', '}']);
     if !empty_pair {
         return false;
     }
@@ -223,7 +237,13 @@ mod tests {
         }
 
         fn key(&mut self, code: KeyCode, mods: KeyModifiers) {
-            handle_key(&mut self.state, &mut self.menu, &self.vars, KeyEvent::new(code, mods), &mut self.events);
+            handle_key(
+                &mut self.state,
+                &mut self.menu,
+                &self.vars,
+                KeyEvent::new(code, mods),
+                &mut self.events,
+            );
         }
 
         fn typ(&mut self, text: &str) {
@@ -256,7 +276,10 @@ mod tests {
     fn typing_filters_and_tab_inserts_the_variable_past_the_braces() {
         let mut i = Input::new("x/");
         i.typ("{{t");
-        let names: Vec<_> = candidates(&i.vars, "t").iter().map(|v| v.0.clone()).collect();
+        let names: Vec<_> = candidates(&i.vars, "t")
+            .iter()
+            .map(|v| v.0.clone())
+            .collect();
         assert!(names.contains(&"token".to_string()) && names.contains(&"tenantId".to_string()));
 
         i.typ("ok");

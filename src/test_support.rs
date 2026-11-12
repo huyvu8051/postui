@@ -15,7 +15,10 @@ pub fn isolated_storage() -> std::sync::MutexGuard<'static, ()> {
         home
     });
     let data = dirs::data_dir().unwrap();
-    assert!(data.starts_with(home), "storage must point at the temp HOME");
+    assert!(
+        data.starts_with(home),
+        "storage must point at the temp HOME"
+    );
     let _ = std::fs::remove_dir_all(data.join("postui"));
     guard
 }

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::model::{HistoryEntry, ResponseRecord, Workspace};
 use crate::session::StoredSession;
@@ -41,7 +41,8 @@ pub fn load() -> Result<Workspace> {
 
 pub fn save(workspace: &Workspace) -> Result<()> {
     let path = workspace_path()?;
-    let contents = serde_json::to_string_pretty(workspace).context("failed to serialize workspace")?;
+    let contents =
+        serde_json::to_string_pretty(workspace).context("failed to serialize workspace")?;
     std::fs::write(&path, contents)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
@@ -57,7 +58,10 @@ fn load_side<T: DeserializeOwned + Default>(name: &str) -> T {
         return T::default();
     };
     serde_json::from_str(&contents).unwrap_or_else(|e| {
-        crate::logger::log(&format!("{name} load"), &format!("{} is corrupt ({e}) — ignoring it", path.display()));
+        crate::logger::log(
+            &format!("{name} load"),
+            &format!("{} is corrupt ({e}) — ignoring it", path.display()),
+        );
         T::default()
     })
 }
@@ -66,9 +70,11 @@ fn load_side<T: DeserializeOwned + Default>(name: &str) -> T {
 fn save_side<T: Serialize>(name: &str, value: &T) -> Result<()> {
     let path = data_dir()?.join(name);
     let tmp = path.with_extension("json.tmp");
-    let contents = serde_json::to_string(value).with_context(|| format!("failed to serialize {name}"))?;
+    let contents =
+        serde_json::to_string(value).with_context(|| format!("failed to serialize {name}"))?;
     std::fs::write(&tmp, contents).with_context(|| format!("failed to write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("failed to replace {}", path.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }
 
@@ -105,7 +111,10 @@ pub fn load_responses() -> Vec<ResponseRecord> {
         .filter_map(|l| serde_json::from_str(l).map_err(|_| bad += 1).ok())
         .collect();
     if bad > 0 {
-        crate::logger::log("responses load", &format!("skipped {bad} unreadable line(s) in {}", path.display()));
+        crate::logger::log(
+            "responses load",
+            &format!("skipped {bad} unreadable line(s) in {}", path.display()),
+        );
     }
     records
 }
@@ -134,6 +143,7 @@ pub fn rewrite_responses(records: &[ResponseRecord]) -> Result<()> {
         out.push('\n');
     }
     std::fs::write(&tmp, out).with_context(|| format!("failed to write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("failed to replace {}", path.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }

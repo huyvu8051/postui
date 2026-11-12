@@ -1,10 +1,10 @@
 use edtui::{EditorMode, EditorState, EditorTheme, EditorView, SyntaxHighlighter};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
 
 use crate::app::{App, Focus, HeaderFormField, PanelMode, Popup, ScriptTab, SidebarEntry};
@@ -105,13 +105,27 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match &mut app.popup {
         Popup::None => {}
         Popup::TextInput { title, state, .. } => draw_text_input_popup(f, title, state),
-        Popup::HeaderForm { key, value, field, interacting, .. } => {
-            draw_header_form_popup(f, key, value, *field, *interacting)
-        }
-        Popup::EnvManager => draw_env_manager_popup(f, app.workspace.environments.as_slice(), app.workspace.active_environment, app.env_index),
+        Popup::HeaderForm {
+            key,
+            value,
+            field,
+            interacting,
+            ..
+        } => draw_header_form_popup(f, key, value, *field, *interacting),
+        Popup::EnvManager => draw_env_manager_popup(
+            f,
+            app.workspace.environments.as_slice(),
+            app.workspace.active_environment,
+            app.env_index,
+        ),
         Popup::EnvVarEditor { env_index } => {
             let env_index = *env_index;
-            draw_env_var_popup(f, app.workspace.environments.as_slice(), env_index, app.env_var_index)
+            draw_env_var_popup(
+                f,
+                app.workspace.environments.as_slice(),
+                env_index,
+                app.env_var_index,
+            )
         }
         Popup::PathParamForm { name, value, .. } => draw_path_param_form_popup(f, name, value),
         Popup::History { selected } => {
@@ -141,9 +155,12 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 
 fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
     let (selected, query_text, browse, confirm_delete) = match &app.popup {
-        Popup::CollectionFinder { query, selected, browse, confirm_delete } => {
-            (*selected, query.lines.to_string(), *browse, *confirm_delete)
-        }
+        Popup::CollectionFinder {
+            query,
+            selected,
+            browse,
+            confirm_delete,
+        } => (*selected, query.lines.to_string(), *browse, *confirm_delete),
         _ => return,
     };
     let matches = app.collection_finder_matches(&query_text, browse);
@@ -164,7 +181,10 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
         let (title, border) = if browse {
             (" Search — / or i: type ", Color::DarkGray)
         } else {
-            (" Search — type to filter, Enter: open, Esc: browse list ", Color::Cyan)
+            (
+                " Search — type to filter, Enter: open, Esc: browse list ",
+                Color::Cyan,
+            )
         };
         let theme = editor_theme(
             Block::default()
@@ -172,7 +192,10 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
                 .border_style(Style::default().fg(border))
                 .title(title),
         );
-        f.render_widget(EditorView::new(query).theme(theme).single_line(true), rows[0]);
+        f.render_widget(
+            EditorView::new(query).theme(theme).single_line(true),
+            rows[0],
+        );
     }
 
     let items: Vec<ListItem> = matches
@@ -180,7 +203,11 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
         .map(|e| match e {
             SidebarEntry::Collection(ci) => {
                 let c = &app.workspace.collections[*ci];
-                let marker = if app.expanded.contains(&c.id) { "▾" } else { "▸" };
+                let marker = if app.expanded.contains(&c.id) {
+                    "▾"
+                } else {
+                    "▸"
+                };
                 ListItem::new(format!("{marker} {}", c.name))
                     .style(Style::default().add_modifier(Modifier::BOLD))
             }
@@ -189,7 +216,12 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
                 let r = &c.requests[*ri];
                 let star = if app.is_dirty(r.id) { "*" } else { " " };
                 if recent_mode {
-                    ListItem::new(format!("{star} {} / {} {}", c.name, r.method.as_str(), r.name))
+                    ListItem::new(format!(
+                        "{star} {} / {} {}",
+                        c.name,
+                        r.method.as_str(),
+                        r.name
+                    ))
                 } else {
                     ListItem::new(format!("  {star} {} {}", r.method.as_str(), r.name))
                 }
@@ -222,12 +254,21 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
                 c.name,
                 c.requests.len()
             ))
-            .style(Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
         }
         Some(SidebarEntry::Request(ci, ri)) => {
             let r = &app.workspace.collections[ci].requests[ri];
-            Line::from(format!(" Delete request \"{}\"? y/n ", r.name))
-                .style(Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD))
+            Line::from(format!(" Delete request \"{}\"? y/n ", r.name)).style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
         }
         None => Line::from(format!(" {list_hint} ")),
     };
@@ -239,7 +280,11 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
                 .title(title)
                 .title_bottom(bottom),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
 
     f.render_stateful_widget(list, rows[1], &mut list_state);
 }
@@ -265,7 +310,10 @@ fn draw_request_top(f: &mut Frame, app: &mut App, area: Rect) {
     // while the URL is being edited, like the single-line popups do.
     let editing = app.focus == Focus::Url && app.panel_mode == PanelMode::Interact;
     let title = if editing {
-        format!(" URL [{}] — {{{{: variables, :param for path params ", mode_label(app.url_state.mode))
+        format!(
+            " URL [{}] — {{{{: variables, :param for path params ",
+            mode_label(app.url_state.mode)
+        )
     } else {
         " URL (vim keys — i insert, hjkl move; {{var}} for env vars, :param below) ".to_string()
     };
@@ -276,21 +324,24 @@ fn draw_request_top(f: &mut Frame, app: &mut App, area: Rect) {
             .title(title),
     );
     f.render_widget(
-        EditorView::new(&mut app.url_state).theme(theme).single_line(true),
+        EditorView::new(&mut app.url_state)
+            .theme(theme)
+            .single_line(true),
         cols[1],
     );
 }
 
 fn draw_path_params(f: &mut Frame, app: &mut App, area: Rect) {
     if app.current.path_params.is_empty() {
-        let placeholder = Paragraph::new("No path params — add a :name segment to the URL (e.g. /:tenantId/...)")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style(app, Focus::PathParams))
-                    .title(" Path Params "),
-            );
+        let placeholder =
+            Paragraph::new("No path params — add a :name segment to the URL (e.g. /:tenantId/...)")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(border_style(app, Focus::PathParams))
+                        .title(" Path Params "),
+                );
         f.render_widget(placeholder, area);
         return;
     }
@@ -382,7 +433,13 @@ fn draw_body_and_response(f: &mut Frame, app: &mut App, area: Rect) {
 fn body_type_tabs(active: BodyMode) -> String {
     BodyMode::ALL
         .iter()
-        .map(|m| if *m == active { format!("[{}]", m.as_str()) } else { m.as_str().to_string() })
+        .map(|m| {
+            if *m == active {
+                format!("[{}]", m.as_str())
+            } else {
+                m.as_str().to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -398,7 +455,10 @@ fn draw_body_content(f: &mut Frame, app: &mut App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(border_style(app, Focus::Body))
-                    .title(format!(" Body {} — [ ]: type, i: insert, f: format JSON ", body_type_tabs(app.current.body_mode))),
+                    .title(format!(
+                        " Body {} — [ ]: type, i: insert, f: format JSON ",
+                        body_type_tabs(app.current.body_mode)
+                    )),
             );
             let is_json = body_looks_like_json(app);
             let mut view = EditorView::new(&mut app.body_state).theme(theme);
@@ -437,7 +497,11 @@ fn draw_form_data(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|field| {
             let enabled = if field.enabled { "[x]" } else { "[ ]" };
-            let kind = if field.value.is_file() { "File" } else { "Text" };
+            let kind = if field.value.is_file() {
+                "File"
+            } else {
+                "Text"
+            };
             let style = if field.enabled {
                 Style::default()
             } else {
@@ -462,7 +526,10 @@ fn draw_form_data(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style(app, Focus::Body))
-                .title(format!(" Body {} — [ ]: type, n: new, i: edit, d: delete, x: toggle, t: text/file ", body_type_tabs(app.current.body_mode))),
+                .title(format!(
+                    " Body {} — [ ]: type, n: new, i: edit, d: delete, x: toggle, t: text/file ",
+                    body_type_tabs(app.current.body_mode)
+                )),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
@@ -489,7 +556,10 @@ fn draw_binary(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(border_style(app, Focus::Body))
-            .title(format!(" Body {} — [ ]: type, i/Enter: set path, d: clear ", body_type_tabs(app.current.body_mode))),
+            .title(format!(
+                " Body {} — [ ]: type, i/Enter: set path, d: clear ",
+                body_type_tabs(app.current.body_mode)
+            )),
     );
     f.render_widget(paragraph, area);
 }
@@ -563,12 +633,20 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let marker = if Some(*id) == active { "▶" } else { " " };
             let dirty = if app.is_dirty(*id) { "*" } else { " " };
             let style = if Some(*id) == active {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
             let slot = app.slot_of(*id).map_or(" ".to_string(), |s| s.to_string());
-            Some(ListItem::new(format!("{marker}{dirty}{slot} {:<6} {name}", method.as_str())).style(style))
+            Some(
+                ListItem::new(format!(
+                    "{marker}{dirty}{slot} {:<6} {name}",
+                    method.as_str()
+                ))
+                .style(style),
+            )
         })
         .collect();
 
@@ -582,9 +660,18 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
             " Discard unsaved changes to \"{}\"? y/n ",
             app.workspace.collections[ci].requests[ri].name
         ))
-        .style(Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)),
-        None if app.tab_mark_pending => Line::from(" Assign to space 1-9, 0: clear slot ")
-            .style(Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        .style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+        None if app.tab_mark_pending => Line::from(" Assign to space 1-9, 0: clear slot ").style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         None => Line::from(" Enter: open, d: close, J/K: move, m<1-9>: slot "),
     };
     let list = List::new(items)
@@ -616,11 +703,19 @@ fn draw_history_popup(f: &mut Frame, app: &App, selected: usize) {
                 None => ("ERR".to_string(), Color::Red),
             };
             let ms = e.duration_ms.map(|d| format!("{d}ms")).unwrap_or_default();
-            let gone = if e.request_id.and_then(|id| app.find_request(id)).is_none() { " (deleted)" } else { "" };
+            let gone = if e.request_id.and_then(|id| app.find_request(id)).is_none() {
+                " (deleted)"
+            } else {
+                ""
+            };
             let line = Line::from(vec![
                 ratatui::text::Span::raw(format!("{}  ", e.timestamp.format("%m-%d %H:%M:%S"))),
                 ratatui::text::Span::styled(format!("{status:>3}"), Style::default().fg(color)),
-                ratatui::text::Span::raw(format!(" {ms:>7}  {:<7} {}{gone}  ", e.method.as_str(), e.name)),
+                ratatui::text::Span::raw(format!(
+                    " {ms:>7}  {:<7} {}{gone}  ",
+                    e.method.as_str(),
+                    e.name
+                )),
                 ratatui::text::Span::styled(e.url.clone(), Style::default().fg(Color::DarkGray)),
             ]);
             ListItem::new(line)
@@ -639,7 +734,11 @@ fn draw_history_popup(f: &mut Frame, app: &App, selected: usize) {
                 .title(format!(" History ({}) ", app.history.len()))
                 .title_bottom(" j/k: move, Enter: open request, Esc: close "),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -663,14 +762,22 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
         Some((pos, total, _)) if total > 1 => format!(" {pos}/{total}"),
         _ => String::new(),
     };
-    let hint = if hist.is_some_and(|(_, total, _)| total > 1) { "[ ]: older/newer, x: run post-script, " } else { "x: run post-script, " };
+    let hint = if hist.is_some_and(|(_, total, _)| total > 1) {
+        "[ ]: older/newer, x: run post-script, "
+    } else {
+        "x: run post-script, "
+    };
     let title = if viewing_past {
         let (_, _, rec) = hist.expect("response_view implies a record");
         let what = match (&rec.response, &rec.error) {
             (Some(r), _) => format!("{} ({} ms)", r.status, r.duration_ms),
             _ => "request failed".to_string(),
         };
-        let cut = if rec.truncated { " · body truncated" } else { "" };
+        let cut = if rec.truncated {
+            " · body truncated"
+        } else {
+            ""
+        };
         format!(
             " Response{counter} · {} · {what}{cut} — PAST RESPONSE — {hint}hjkl gg/G /search v y ",
             rec.timestamp.format("%m-%d %H:%M:%S")
@@ -718,21 +825,18 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let status = Paragraph::new(app.status_message.as_str()).style(Style::default().fg(Color::Gray));
+    let status =
+        Paragraph::new(app.status_message.as_str()).style(Style::default().fg(Color::Gray));
     f.render_widget(status, area);
 }
 
 fn draw_text_input_popup(f: &mut Frame, title: &str, state: &mut EditorState) {
     let area = centered_rect(60, 5, f.area());
     f.render_widget(Clear, area);
-    let theme = editor_theme(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(
-                " {title} [{}] (Enter: confirm, Esc: normal/cancel) ",
-                mode_label(state.mode)
-            )),
-    );
+    let theme = editor_theme(Block::default().borders(Borders::ALL).title(format!(
+        " {title} [{}] (Enter: confirm, Esc: normal/cancel) ",
+        mode_label(state.mode)
+    )));
     f.render_widget(EditorView::new(state).theme(theme).single_line(true), area);
 }
 
@@ -748,11 +852,13 @@ fn draw_header_form_popup(
     let area = centered_rect(width, height, f.area());
     f.render_widget(Clear, area);
     f.render_widget(
-        Block::default().borders(Borders::ALL).title(if interacting {
-            " Key / Value — editing (Esc: back to navigate, Ctrl+S: save) "
-        } else {
-            " Key / Value (hjkl: select, Enter/i: edit, Ctrl+S: save, Esc: cancel) "
-        }),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(if interacting {
+                " Key / Value — editing (Esc: back to navigate, Ctrl+S: save) "
+            } else {
+                " Key / Value (hjkl: select, Enter/i: edit, Ctrl+S: save, Esc: cancel) "
+            }),
         area,
     );
     let inner = Layout::default()
@@ -777,7 +883,10 @@ fn draw_header_form_popup(
             .border_style(border_for(field == HeaderFormField::Key))
             .title(format!(" Key [{}] ", mode_label(key.mode))),
     );
-    f.render_widget(EditorView::new(key).theme(key_theme).single_line(true), inner[0]);
+    f.render_widget(
+        EditorView::new(key).theme(key_theme).single_line(true),
+        inner[0],
+    );
 
     let value_theme = editor_theme(
         Block::default()
@@ -785,7 +894,10 @@ fn draw_header_form_popup(
             .border_style(border_for(field == HeaderFormField::Value))
             .title(format!(" Value [{}] ", mode_label(value.mode))),
     );
-    f.render_widget(EditorView::new(value).theme(value_theme).single_line(true), inner[1]);
+    f.render_widget(
+        EditorView::new(value).theme(value_theme).single_line(true),
+        inner[1],
+    );
 }
 
 fn draw_path_param_form_popup(f: &mut Frame, name: &str, value: &mut EditorState) {
@@ -813,14 +925,19 @@ fn draw_var_menu(f: &mut Frame, app: &mut App) {
     let env_name = app.active_environment().map(|e| e.name.clone());
     let selected = app.var_menu.map_or(0, |m| m.selected);
     let Some(state) = app.var_input() else { return };
-    let (Some(prefix), Some(cursor)) = (crate::completion::prefix_at_cursor(state), state.cursor_screen_position())
-    else {
+    let (Some(prefix), Some(cursor)) = (
+        crate::completion::prefix_at_cursor(state),
+        state.cursor_screen_position(),
+    ) else {
         return;
     };
     let matches = crate::completion::candidates(&vars, &prefix);
 
     let lines: Vec<ListItem> = if env_name.is_none() {
-        vec![ListItem::new(" No active environment (space e) ").style(Style::default().fg(Color::DarkGray))]
+        vec![
+            ListItem::new(" No active environment (space e) ")
+                .style(Style::default().fg(Color::DarkGray)),
+        ]
     } else if matches.is_empty() {
         vec![ListItem::new(" No matching variable ").style(Style::default().fg(Color::DarkGray))]
     } else {
@@ -838,13 +955,28 @@ fn draw_var_menu(f: &mut Frame, app: &mut App) {
 
     // Size to content, then keep it on screen: below the cursor, or above if no room.
     let screen = f.area();
-    let widest = matches.iter().map(|(n, v)| n.chars().count() + v.chars().take(30).count() + 3).max().unwrap_or(26);
+    let widest = matches
+        .iter()
+        .map(|(n, v)| n.chars().count() + v.chars().take(30).count() + 3)
+        .max()
+        .unwrap_or(26);
     let width = (widest as u16 + 2).clamp(28, 60).min(screen.width);
     let height = (lines.len() as u16).min(8) + 2;
     let below = cursor.y + 1;
-    let y = if below + height <= screen.y + screen.height { below } else { cursor.y.saturating_sub(height) };
-    let x = cursor.x.min((screen.x + screen.width).saturating_sub(width));
-    let area = Rect { x, y, width, height: height.min(screen.height) };
+    let y = if below + height <= screen.y + screen.height {
+        below
+    } else {
+        cursor.y.saturating_sub(height)
+    };
+    let x = cursor
+        .x
+        .min((screen.x + screen.width).saturating_sub(width));
+    let area = Rect {
+        x,
+        y,
+        width,
+        height: height.min(screen.height),
+    };
 
     let title = match &env_name {
         Some(name) => format!(" {name} — Tab: insert, ^N/^P: move "),
@@ -855,7 +987,12 @@ fn draw_var_menu(f: &mut Frame, app: &mut App) {
         list_state.select(Some(selected.min(matches.len() - 1)));
     }
     let list = List::new(lines)
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Magenta))
+                .title(title),
+        )
         .highlight_style(Style::default().bg(Color::Magenta).fg(Color::Black));
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, &mut list_state);
@@ -883,18 +1020,22 @@ fn draw_env_manager_popup(
         state.select(Some(env_index));
     }
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Environments (n: new, Enter: activate, v: variables, d: delete, Esc: close) "),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+    let list =
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(
+                " Environments (n: new, Enter: activate, v: variables, d: delete, Esc: close) ",
+            ))
+            .highlight_style(Style::default().bg(Color::DarkGray));
 
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_env_var_popup(f: &mut Frame, environments: &[crate::model::Environment], env_index: usize, var_index: usize) {
+fn draw_env_var_popup(
+    f: &mut Frame,
+    environments: &[crate::model::Environment],
+    env_index: usize,
+    var_index: usize,
+) {
     let area = centered_rect(60, 12, f.area());
     f.render_widget(Clear, area);
 
@@ -914,12 +1055,10 @@ fn draw_env_var_popup(f: &mut Frame, environments: &[crate::model::Environment],
     }
 
     let list = List::new(items)
-        .block(
-            Block::default().borders(Borders::ALL).title(format!(
-                " Variables — {} (n: new, i: edit, d: delete, Esc: back) ",
-                env.name
-            )),
-        )
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " Variables — {} (n: new, i: edit, d: delete, Esc: back) ",
+            env.name
+        )))
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     f.render_stateful_widget(list, area, &mut state);

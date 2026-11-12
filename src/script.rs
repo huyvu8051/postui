@@ -1,7 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use mlua::{FromLuaMulti, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, Variadic};
+use mlua::{
+    FromLuaMulti, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, Variadic,
+};
 
 use crate::model::{Environment, Header, RequestItem, ResponseData};
 
@@ -39,7 +41,11 @@ fn install_instruction_limit(lua: &Lua) {
     );
 }
 
-fn install_console<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Vec<String>>>) -> mlua::Result<()> {
+fn install_console<'lua>(
+    lua: &'lua Lua,
+    pm: &Table<'lua>,
+    logs: Rc<RefCell<Vec<String>>>,
+) -> mlua::Result<()> {
     let console = lua.create_table()?;
     let log_fn = lua.create_function(move |lua, args: Variadic<Value>| {
         let tostring: mlua::Function = lua.globals().get("tostring")?;
@@ -57,14 +63,19 @@ fn install_console<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Vec<
 }
 
 /// `pm.clipboard.set(text)` — the only clipboard access scripts get (write-only).
-fn install_clipboard<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Vec<String>>>) -> mlua::Result<()> {
+fn install_clipboard<'lua>(
+    lua: &'lua Lua,
+    pm: &Table<'lua>,
+    logs: Rc<RefCell<Vec<String>>>,
+) -> mlua::Result<()> {
     let clipboard = lua.create_table()?;
     let set_fn = lua.create_function(move |_, text: String| {
         let chars = text.chars().count();
         arboard::Clipboard::new()
             .and_then(|mut c| c.set_text(text))
             .map_err(|e| mlua::Error::RuntimeError(format!("clipboard unavailable: {e}")))?;
-        logs.borrow_mut().push(format!("clipboard: copied {chars} chars"));
+        logs.borrow_mut()
+            .push(format!("clipboard: copied {chars} chars"));
         Ok(())
     })?;
     clipboard.set("set", set_fn)?;
@@ -82,7 +93,11 @@ fn without_self(args: MultiValue) -> MultiValue {
     MultiValue::from_vec(values)
 }
 
-fn install_environment<'lua>(lua: &'lua Lua, pm: &Table<'lua>, env: Rc<RefCell<Environment>>) -> mlua::Result<()> {
+fn install_environment<'lua>(
+    lua: &'lua Lua,
+    pm: &Table<'lua>,
+    env: Rc<RefCell<Environment>>,
+) -> mlua::Result<()> {
     let environment = lua.create_table()?;
 
     let e = env.clone();
@@ -90,7 +105,11 @@ fn install_environment<'lua>(lua: &'lua Lua, pm: &Table<'lua>, env: Rc<RefCell<E
         "get",
         lua.create_function(move |lua, args: MultiValue| {
             let key = String::from_lua_multi(without_self(args), lua)?;
-            Ok(e.borrow().variables.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()))
+            Ok(e.borrow()
+                .variables
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.clone()))
         })?,
     )?;
 
@@ -130,7 +149,11 @@ fn install_environment<'lua>(lua: &'lua Lua, pm: &Table<'lua>, env: Rc<RefCell<E
     Ok(())
 }
 
-fn install_pm_test<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Vec<String>>>) -> mlua::Result<()> {
+fn install_pm_test<'lua>(
+    lua: &'lua Lua,
+    pm: &Table<'lua>,
+    logs: Rc<RefCell<Vec<String>>>,
+) -> mlua::Result<()> {
     let test_fn = lua.create_function(move |_, (name, f): (String, mlua::Function)| {
         match f.call::<_, ()>(()) {
             Ok(()) => logs.borrow_mut().push(format!("PASS {name}")),
@@ -162,7 +185,11 @@ fn apply_request_table_back(request: Table, req: &mut RequestItem) -> mlua::Resu
     let mut new_headers = Vec::new();
     for pair in headers.pairs::<String, String>() {
         let (k, v) = pair?;
-        new_headers.push(Header { key: k, value: v, enabled: true });
+        new_headers.push(Header {
+            key: k,
+            value: v,
+            enabled: true,
+        });
     }
     req.headers = new_headers;
     Ok(())
@@ -180,8 +207,9 @@ fn build_response_table<'lua>(lua: &'lua Lua, resp: &ResponseData) -> mlua::Resu
 
     let body_for_json = resp.body.clone();
     let json_fn = lua.create_function(move |lua, ()| {
-        let value: serde_json::Value = serde_json::from_str(&body_for_json)
-            .map_err(|e| mlua::Error::RuntimeError(format!("response body is not valid JSON: {e}")))?;
+        let value: serde_json::Value = serde_json::from_str(&body_for_json).map_err(|e| {
+            mlua::Error::RuntimeError(format!("response body is not valid JSON: {e}"))
+        })?;
         lua.to_value(&value)
     })?;
     response.set("json", json_fn)?;
@@ -190,18 +218,27 @@ fn build_response_table<'lua>(lua: &'lua Lua, resp: &ResponseData) -> mlua::Resu
 }
 
 fn take_logs(logs: Rc<RefCell<Vec<String>>>) -> Vec<String> {
-    Rc::try_unwrap(logs).map(RefCell::into_inner).unwrap_or_default()
+    Rc::try_unwrap(logs)
+        .map(RefCell::into_inner)
+        .unwrap_or_default()
 }
 
 fn finish(logs: Rc<RefCell<Vec<String>>>, result: mlua::Result<()>) -> ScriptOutcome {
     let logs = take_logs(logs);
     match result {
         Ok(()) => ScriptOutcome { logs, error: None },
-        Err(e) => ScriptOutcome { logs, error: Some(format!("{e}")) },
+        Err(e) => ScriptOutcome {
+            logs,
+            error: Some(format!("{e}")),
+        },
     }
 }
 
-pub fn run_pre_request(script: &str, req: &mut RequestItem, env: &mut Option<Environment>) -> ScriptOutcome {
+pub fn run_pre_request(
+    script: &str,
+    req: &mut RequestItem,
+    env: &mut Option<Environment>,
+) -> ScriptOutcome {
     if script.trim().is_empty() {
         return ScriptOutcome::default();
     }
@@ -233,7 +270,11 @@ pub fn run_pre_request(script: &str, req: &mut RequestItem, env: &mut Option<Env
     finish(logs, result)
 }
 
-pub fn run_post_response(script: &str, resp: &ResponseData, env: &mut Option<Environment>) -> ScriptOutcome {
+pub fn run_post_response(
+    script: &str,
+    resp: &ResponseData,
+    env: &mut Option<Environment>,
+) -> ScriptOutcome {
     if script.trim().is_empty() {
         return ScriptOutcome::default();
     }
@@ -276,7 +317,12 @@ mod tests {
         assert_eq!(out.error, None);
         assert_eq!(out.logs, vec!["function"]);
 
-        let resp = ResponseData { status: 200, headers: vec![], body: String::new(), duration_ms: 0 };
+        let resp = ResponseData {
+            status: 200,
+            headers: vec![],
+            body: String::new(),
+            duration_ms: 0,
+        };
         let out = run_post_response("pm.console.log(type(pm.clipboard.set))", &resp, &mut env);
         assert_eq!(out.error, None);
         assert_eq!(out.logs, vec!["function"]);
@@ -287,12 +333,21 @@ mod tests {
     }
 
     fn var(env: &Option<Environment>, key: &str) -> Option<String> {
-        env.as_ref()?.variables.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+        env.as_ref()?
+            .variables
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
     }
 
     #[test]
     fn environment_accepts_postman_dot_and_lua_colon_calls() {
-        let resp = ResponseData { status: 201, headers: vec![], body: String::new(), duration_ms: 0 };
+        let resp = ResponseData {
+            status: 201,
+            headers: vec![],
+            body: String::new(),
+            duration_ms: 0,
+        };
         let mut env = env();
         let script = r#"
             pm.environment.set("dot", "1")

@@ -3,14 +3,16 @@ use edtui::EditorMode;
 use uuid::Uuid;
 
 use crate::app::{
-    single_line_state, vim_line_state, App, Direction, Focus, HeaderFormField, HeaderFormTarget, LeaderState,
-    PanelMode, Popup, RequestSource, ScriptTab, SidebarEntry, TextInputTarget,
+    App, Direction, Focus, HeaderFormField, HeaderFormTarget, LeaderState, PanelMode, Popup,
+    RequestSource, ScriptTab, SidebarEntry, TextInputTarget, single_line_state, vim_line_state,
 };
 use crate::model::{BodyMode, Collection, Environment, FormField, FormValue, Header, RequestItem};
 
 fn is_vim_editor_focus(app: &App) -> bool {
-    matches!(app.focus, Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console)
-        || (app.focus == Focus::Body && app.current.body_mode == BodyMode::Raw)
+    matches!(
+        app.focus,
+        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console
+    ) || (app.focus == Focus::Body && app.current.body_mode == BodyMode::Raw)
 }
 
 pub enum Action {
@@ -25,7 +27,13 @@ pub fn handle_paste(app: &mut App, text: String) {
             app.editor_events.on_paste_event(text, state);
             return;
         }
-        Popup::HeaderForm { key, value, field, interacting, .. } => {
+        Popup::HeaderForm {
+            key,
+            value,
+            field,
+            interacting,
+            ..
+        } => {
             if !*interacting {
                 return;
             }
@@ -52,7 +60,9 @@ pub fn handle_paste(app: &mut App, text: String) {
         Focus::Body if app.current.body_mode == BodyMode::Raw => {
             app.editor_events.on_paste_event(text, &mut app.body_state)
         }
-        Focus::Response => app.editor_events.on_paste_event(text, &mut app.response_state),
+        Focus::Response => app
+            .editor_events
+            .on_paste_event(text, &mut app.response_state),
         Focus::ScriptEditor => {
             let state = match app.script_tab {
                 ScriptTab::Pre => &mut app.pre_script_state,
@@ -138,11 +148,17 @@ fn handle_navigate_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => app.panel_mode = PanelMode::Interact,
         KeyCode::Char('[') if app.focus == Focus::Body => cycle_body_mode(app, false),
         KeyCode::Char(']') if app.focus == Focus::Body => cycle_body_mode(app, true),
-        KeyCode::Char('[') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.prev(),
-        KeyCode::Char(']') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.next(),
+        KeyCode::Char('[') if app.focus == Focus::ScriptEditor => {
+            app.script_tab = app.script_tab.prev()
+        }
+        KeyCode::Char(']') if app.focus == Focus::ScriptEditor => {
+            app.script_tab = app.script_tab.next()
+        }
         KeyCode::Char('[') if app.focus == Focus::Response => app.step_response_history(true),
         KeyCode::Char(']') if app.focus == Focus::Response => app.step_response_history(false),
-        KeyCode::Char('x') if app.focus == Focus::Response => app.run_post_script_on_shown_response(),
+        KeyCode::Char('x') if app.focus == Focus::Response => {
+            app.run_post_script_on_shown_response()
+        }
         _ => {}
     }
 }
@@ -159,7 +175,9 @@ fn handle_interact_key(app: &mut App, key: KeyEvent) {
         Focus::PathParams => handle_path_params_key(app, key),
         Focus::Headers => handle_headers_key(app, key),
         Focus::Body => handle_body_field_key(app, key),
-        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console => unreachable!("handled above"),
+        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console => {
+            unreachable!("handled above")
+        }
     }
 }
 
@@ -209,7 +227,12 @@ fn toggle_tabs_sidebar(app: &mut App) {
     }
     app.sidebar_visible = true;
     // Start on the loaded request's tab.
-    if let Some(pos) = app.workspace.open_tabs.iter().position(|t| *t == app.current.id) {
+    if let Some(pos) = app
+        .workspace
+        .open_tabs
+        .iter()
+        .position(|t| *t == app.current.id)
+    {
         app.tab_index = pos;
     }
     jump_into(app, Focus::Tabs);
@@ -268,7 +291,10 @@ fn cycle_tab(app: &mut App, forward: bool) {
         app.status_message = "No open tabs".into();
         return;
     }
-    let next = match tabs.iter().position(|t| app.source.is_some() && *t == app.current.id) {
+    let next = match tabs
+        .iter()
+        .position(|t| app.source.is_some() && *t == app.current.id)
+    {
         Some(pos) if forward => (pos + 1) % len,
         Some(pos) => (pos + len - 1) % len,
         None => 0,
@@ -567,7 +593,9 @@ fn handle_console_key(app: &mut App, key: KeyEvent) {
         state.lines = edtui::Lines::from(before.as_str());
         let last_row = state.lines.len().saturating_sub(1);
         let row = cursor.row.min(last_row);
-        let col = cursor.col.min(state.lines.len_col(row).unwrap_or(0).saturating_sub(1));
+        let col = cursor
+            .col
+            .min(state.lines.len_col(row).unwrap_or(0).saturating_sub(1));
         state.cursor = edtui::Index2::new(row, col);
         app.status_message = "Console is read-only".into();
     }
@@ -610,7 +638,9 @@ fn find_link(line: &str) -> Option<String> {
         if let Some(start) = line.find(scheme) {
             let rest = &line[start..];
             let end = rest
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ']' | '}' | ','))
+                .find(|c: char| {
+                    c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ']' | '}' | ',')
+                })
                 .unwrap_or(rest.len());
             let url = &rest[..end];
             if url.len() > scheme.len() {
@@ -760,7 +790,10 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                     HeaderFormTarget::FormField => match edit_index {
                         Some(i) => {
                             app.current.form_fields[i].key = k;
-                            set_form_value_text_preserving_kind(&mut app.current.form_fields[i].value, v);
+                            set_form_value_text_preserving_kind(
+                                &mut app.current.form_fields[i].value,
+                                v,
+                            );
                         }
                         None => app.current.form_fields.push(FormField::new_text(k, v)),
                     },
@@ -817,7 +850,8 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                     open_text_input(app, "New environment name", TextInputTarget::NewEnvName);
                 }
                 KeyCode::Enter if len > 0 => {
-                    app.workspace.active_environment = Some(app.workspace.environments[app.env_index].id);
+                    app.workspace.active_environment =
+                        Some(app.workspace.environments[app.env_index].id);
                     app.persist();
                 }
                 KeyCode::Char('v') if len > 0 => {
@@ -897,14 +931,20 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
             let len = app.history.len();
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => app.popup = Popup::None,
-                KeyCode::Char('j') | KeyCode::Down if len > 0 => *selected = (*selected + 1).min(len - 1),
+                KeyCode::Char('j') | KeyCode::Down if len > 0 => {
+                    *selected = (*selected + 1).min(len - 1)
+                }
                 KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
                 KeyCode::Char('g') => *selected = 0,
                 KeyCode::Char('G') => *selected = len.saturating_sub(1),
                 KeyCode::Enter => {
                     // Shown newest first.
-                    let entry = len.checked_sub(*selected + 1).and_then(|i| app.history.get(i));
-                    let target = entry.and_then(|e| e.request_id).and_then(|id| app.find_request(id));
+                    let entry = len
+                        .checked_sub(*selected + 1)
+                        .and_then(|i| app.history.get(i));
+                    let target = entry
+                        .and_then(|e| e.request_id)
+                        .and_then(|id| app.find_request(id));
                     match target {
                         Some((ci, ri)) => {
                             app.popup = Popup::None;
@@ -932,7 +972,10 @@ fn collection_finder_browse(app: &App) -> bool {
 }
 
 fn set_collection_finder_browse(app: &mut App, value: bool) {
-    if let Popup::CollectionFinder { browse, selected, .. } = &mut app.popup {
+    if let Popup::CollectionFinder {
+        browse, selected, ..
+    } = &mut app.popup
+    {
         *browse = value;
         *selected = 0;
     }
@@ -1035,7 +1078,11 @@ fn handle_collection_finder_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('a') => {
-                open_text_input(app, "New collection name", TextInputTarget::NewCollectionName);
+                open_text_input(
+                    app,
+                    "New collection name",
+                    TextInputTarget::NewCollectionName,
+                );
                 return;
             }
             KeyCode::Char('d') => {
@@ -1068,10 +1115,17 @@ fn handle_collection_finder_key(app: &mut App, key: KeyEvent) {
 }
 
 /// List-focused ("browse") keys: vim-style navigation over the collection tree.
-fn handle_collection_browse_key(app: &mut App, key: KeyEvent, selected: usize, matches: &[SidebarEntry]) {
+fn handle_collection_browse_key(
+    app: &mut App,
+    key: KeyEvent,
+    selected: usize,
+    matches: &[SidebarEntry],
+) {
     let current = matches.get(selected).copied();
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => select_next_collection_finder_match(app, selected, matches.len()),
+        KeyCode::Char('j') | KeyCode::Down => {
+            select_next_collection_finder_match(app, selected, matches.len())
+        }
         KeyCode::Char('k') | KeyCode::Up => select_prev_collection_finder_match(app, selected),
         KeyCode::Char('g') => set_collection_finder_selected(app, 0),
         KeyCode::Char('G') => set_collection_finder_selected(app, matches.len().saturating_sub(1)),
@@ -1091,14 +1145,21 @@ fn handle_collection_browse_key(app: &mut App, key: KeyEvent, selected: usize, m
                 app.expanded.remove(&id);
             }
             Some(SidebarEntry::Request(ci, _)) => {
-                if let Some(pos) = matches.iter().position(|e| *e == SidebarEntry::Collection(ci)) {
+                if let Some(pos) = matches
+                    .iter()
+                    .position(|e| *e == SidebarEntry::Collection(ci))
+                {
                     set_collection_finder_selected(app, pos);
                 }
             }
             None => {}
         },
         KeyCode::Char('a') => finder_new_request(app, current),
-        KeyCode::Char('A') => open_text_input(app, "New collection name", TextInputTarget::NewCollectionName),
+        KeyCode::Char('A') => open_text_input(
+            app,
+            "New collection name",
+            TextInputTarget::NewCollectionName,
+        ),
         KeyCode::Char('d') => request_finder_delete(app, current),
         _ => {}
     }
@@ -1118,7 +1179,12 @@ fn delete_collection_finder_selection(app: &mut App, entry: Option<SidebarEntry>
             let removed = app.workspace.collections[ci].requests.remove(ri);
             app.drafts.remove(&removed.id);
             app.response_history.remove(&removed.id);
-            if app.source == Some(RequestSource { collection_index: ci, request_index: ri }) {
+            if app.source
+                == Some(RequestSource {
+                    collection_index: ci,
+                    request_index: ri,
+                })
+            {
                 app.source = None;
             }
             app.persist();
@@ -1168,7 +1234,10 @@ mod tests {
         assert!(app.var_menu.is_some());
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.url_state.lines.to_string(), "{{token}}");
-        assert_eq!(app.current.url, "{{token}}", "URL edits sync into the request");
+        assert_eq!(
+            app.current.url, "{{token}}",
+            "URL edits sync into the request"
+        );
     }
 
     #[test]
@@ -1177,8 +1246,14 @@ mod tests {
         let mut app = app_with_env();
         app.current.path_params = vec![("id".into(), String::new())];
         open_path_param_form(&mut app, 0);
-        let Popup::PathParamForm { value, .. } = &app.popup else { panic!() };
-        assert_eq!(value.mode, EditorMode::Normal, "opens in Normal like the other popups");
+        let Popup::PathParamForm { value, .. } = &app.popup else {
+            panic!()
+        };
+        assert_eq!(
+            value.mode,
+            EditorMode::Normal,
+            "opens in Normal like the other popups"
+        );
 
         typ(&mut app, "i{{");
         press(&mut app, KeyCode::Enter); // picks the variable, doesn't confirm the popup
@@ -1192,7 +1267,10 @@ mod tests {
         assert!(matches!(app.popup, Popup::PathParamForm { .. }));
         press(&mut app, KeyCode::Esc); // Normal -> cancel
         assert!(matches!(app.popup, Popup::None));
-        assert_eq!(app.current.path_params[0].1, "{{token}}", "cancel keeps the old value");
+        assert_eq!(
+            app.current.path_params[0].1, "{{token}}",
+            "cancel keeps the old value"
+        );
     }
 
     #[test]
@@ -1204,7 +1282,10 @@ mod tests {
         c.requests.push(RequestItem::new("upload"));
         ws.collections.push(c);
         let mut app = App::new(ws);
-        let (basket, upload) = (app.workspace.collections[0].requests[0].id, app.workspace.collections[0].requests[1].id);
+        let (basket, upload) = (
+            app.workspace.collections[0].requests[0].id,
+            app.workspace.collections[0].requests[1].id,
+        );
         app.workspace.open_tabs = vec![basket, upload];
         app.focus = Focus::Tabs;
         app.panel_mode = PanelMode::Interact;

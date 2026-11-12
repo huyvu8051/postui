@@ -24,11 +24,11 @@ use crossterm::{
     },
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        supports_keyboard_enhancement,
     },
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
 use app::App;
@@ -39,7 +39,10 @@ enum AppEvent {
     Key(crossterm::event::KeyEvent),
     Paste(String),
     /// A finished send, tagged with the request as it was when sent.
-    Response { sent: model::RequestItem, result: Result<ResponseData, String> },
+    Response {
+        sent: model::RequestItem,
+        result: Result<ResponseData, String>,
+    },
     /// Idle heartbeat from the input thread (~10/s), used for debounced autosave.
     Tick,
 }
@@ -75,29 +78,31 @@ async fn main() -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
     let input_tx = tx.clone();
-    std::thread::spawn(move || loop {
-        let ready = term_event::poll(Duration::from_millis(100));
-        if let Ok(false) = ready {
-            if input_tx.send(AppEvent::Tick).is_err() {
-                break;
+    std::thread::spawn(move || {
+        loop {
+            let ready = term_event::poll(Duration::from_millis(100));
+            if let Ok(false) = ready {
+                if input_tx.send(AppEvent::Tick).is_err() {
+                    break;
+                }
+                continue;
             }
-            continue;
-        }
-        if let Ok(true) = ready {
-            match term_event::read() {
-                Ok(Event::Key(key)) => {
-                    if key.kind == crossterm::event::KeyEventKind::Press {
-                        if input_tx.send(AppEvent::Key(key)).is_err() {
+            if let Ok(true) = ready {
+                match term_event::read() {
+                    Ok(Event::Key(key)) => {
+                        if key.kind == crossterm::event::KeyEventKind::Press {
+                            if input_tx.send(AppEvent::Key(key)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(Event::Paste(text)) => {
+                        if input_tx.send(AppEvent::Paste(text)).is_err() {
                             break;
                         }
                     }
+                    _ => {}
                 }
-                Ok(Event::Paste(text)) => {
-                    if input_tx.send(AppEvent::Paste(text)).is_err() {
-                        break;
-                    }
-                }
-                _ => {}
             }
         }
     });
@@ -153,18 +158,27 @@ async fn run(
                     Ok(resp) => (Some(resp), None),
                     Err(e) => (None, Some(e)),
                 };
-                app.push_history(&sent, response.as_ref().map(|r| r.status), response.as_ref().map(|r| r.duration_ms));
+                app.push_history(
+                    &sent,
+                    response.as_ref().map(|r| r.status),
+                    response.as_ref().map(|r| r.duration_ms),
+                );
                 match (&response, &error) {
                     (Some(resp), _) => {
                         app.status_message = "Request completed".into();
                         if !sent.post_response_script.trim().is_empty() {
                             let mut env = app.active_environment().cloned();
-                            let outcome = script::run_post_response(&sent.post_response_script, resp, &mut env);
+                            let outcome = script::run_post_response(
+                                &sent.post_response_script,
+                                resp,
+                                &mut env,
+                            );
                             app.push_script_log(outcome.logs);
                             app.replace_environment_matching_id(env);
                             if let Some(err) = outcome.error {
-                                app.status_message =
-                                    format!("Request completed, but post-response script failed: {err}");
+                                app.status_message = format!(
+                                    "Request completed, but post-response script failed: {err}"
+                                );
                             }
                         }
                     }

@@ -2,12 +2,15 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use edtui::{EditorEventHandler, EditorMode, EditorState, Lines};
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use uuid::Uuid;
 
-use crate::model::{BodyMode, Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, ResponseRecord, Workspace};
 use crate::completion::VarMenu;
+use crate::model::{
+    BodyMode, Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData,
+    ResponseRecord, Workspace,
+};
 use crate::session::{EditorBuffers, StoredDraft, StoredSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,12 +370,16 @@ impl App {
             .recent_requests
             .iter()
             .filter_map(|id| {
-                self.workspace.collections.iter().enumerate().find_map(|(ci, c)| {
-                    c.requests
-                        .iter()
-                        .position(|r| r.id == *id)
-                        .map(|ri| SidebarEntry::Request(ci, ri))
-                })
+                self.workspace
+                    .collections
+                    .iter()
+                    .enumerate()
+                    .find_map(|(ci, c)| {
+                        c.requests
+                            .iter()
+                            .position(|r| r.id == *id)
+                            .map(|ri| SidebarEntry::Request(ci, ri))
+                    })
             })
             .collect()
     }
@@ -392,7 +399,12 @@ impl App {
             .collections
             .iter()
             .enumerate()
-            .flat_map(|(ci, c)| c.requests.iter().enumerate().map(move |(ri, r)| (ci, ri, c, r)))
+            .flat_map(|(ci, c)| {
+                c.requests
+                    .iter()
+                    .enumerate()
+                    .map(move |(ri, r)| (ci, ri, c, r))
+            })
             .filter_map(|(ci, ri, c, r)| {
                 let label = format!("{} / {} {}", c.name, r.method.as_str(), r.name);
                 matcher
@@ -408,14 +420,22 @@ impl App {
     /// the inputs that offer variable completion.
     pub fn var_input(&mut self) -> Option<&mut EditorState> {
         match &mut self.popup {
-            Popup::HeaderForm { key, value, field, interacting: true, .. } => Some(match field {
+            Popup::HeaderForm {
+                key,
+                value,
+                field,
+                interacting: true,
+                ..
+            } => Some(match field {
                 HeaderFormField::Key => key,
                 HeaderFormField::Value => value,
             }),
             Popup::PathParamForm { value, .. } => Some(value),
             Popup::None if self.panel_mode == PanelMode::Interact => match self.focus {
                 Focus::Url => Some(&mut self.url_state),
-                Focus::Body if self.current.body_mode == BodyMode::Raw => Some(&mut self.body_state),
+                Focus::Body if self.current.body_mode == BodyMode::Raw => {
+                    Some(&mut self.body_state)
+                }
                 _ => None,
             },
             _ => None,
@@ -424,7 +444,9 @@ impl App {
 
     /// (name, value) pairs of the active environment; empty without one.
     pub fn active_env_vars(&self) -> Vec<(String, String)> {
-        self.active_environment().map(|e| e.variables.clone()).unwrap_or_default()
+        self.active_environment()
+            .map(|e| e.variables.clone())
+            .unwrap_or_default()
     }
 
     pub fn active_environment(&self) -> Option<&Environment> {
@@ -435,7 +457,12 @@ impl App {
 
     pub fn replace_environment_matching_id(&mut self, env: Option<Environment>) {
         let Some(env) = env else { return };
-        if let Some(existing) = self.workspace.environments.iter_mut().find(|e| e.id == env.id) {
+        if let Some(existing) = self
+            .workspace
+            .environments
+            .iter_mut()
+            .find(|e| e.id == env.id)
+        {
             *existing = env;
         }
     }
@@ -455,8 +482,10 @@ impl App {
         self.url_state = EditorState::new(Lines::from(self.current.url.as_str()));
         self.url_state.set_single_line(true);
         self.body_state = EditorState::new(Lines::from(self.current.body.as_str()));
-        self.pre_script_state = EditorState::new(Lines::from(self.current.pre_request_script.as_str()));
-        self.post_script_state = EditorState::new(Lines::from(self.current.post_response_script.as_str()));
+        self.pre_script_state =
+            EditorState::new(Lines::from(self.current.pre_request_script.as_str()));
+        self.post_script_state =
+            EditorState::new(Lines::from(self.current.post_response_script.as_str()));
     }
 
     pub fn push_script_log(&mut self, lines: Vec<String>) {
@@ -473,14 +502,24 @@ impl App {
     }
 
     fn drop_oldest_script_console_lines_past_limit(&mut self) {
-        let excess = self.script_console.len().saturating_sub(SCRIPT_CONSOLE_LIMIT);
+        let excess = self
+            .script_console
+            .len()
+            .saturating_sub(SCRIPT_CONSOLE_LIMIT);
         self.script_console.drain(0..excess);
     }
 
     pub fn find_request(&self, id: Uuid) -> Option<(usize, usize)> {
-        self.workspace.collections.iter().enumerate().find_map(|(ci, c)| {
-            c.requests.iter().position(|r| r.id == id).map(|ri| (ci, ri))
-        })
+        self.workspace
+            .collections
+            .iter()
+            .enumerate()
+            .find_map(|(ci, c)| {
+                c.requests
+                    .iter()
+                    .position(|r| r.id == id)
+                    .map(|ri| (ci, ri))
+            })
     }
 
     /// Drop tabs whose request no longer exists (e.g. deleted in the browser).
@@ -492,23 +531,36 @@ impl App {
             .flat_map(|c| c.requests.iter().map(|r| r.id))
             .collect();
         self.workspace.open_tabs.retain(|id| alive.contains(id));
-        self.workspace.quick_slots.retain(|_, id| alive.contains(id));
-        self.tab_index = self.tab_index.min(self.workspace.open_tabs.len().saturating_sub(1));
+        self.workspace
+            .quick_slots
+            .retain(|_, id| alive.contains(id));
+        self.tab_index = self
+            .tab_index
+            .min(self.workspace.open_tabs.len().saturating_sub(1));
     }
 
     /// The quick slot (1-9) a request is assigned to, if any.
     pub fn slot_of(&self, id: Uuid) -> Option<u8> {
-        self.workspace.quick_slots.iter().find(|(_, v)| **v == id).map(|(k, _)| *k)
+        self.workspace
+            .quick_slots
+            .iter()
+            .find(|(_, v)| **v == id)
+            .map(|(k, _)| *k)
     }
 
     /// Put a request in a quick slot. A request holds at most one slot, and a slot
     /// one request: the request's old slot is freed, and the slot's old holder loses it.
     pub fn assign_slot(&mut self, id: Uuid, slot: u8) {
         let name = |app: &App, id: Uuid| {
-            app.find_request(id).map(|(ci, ri)| app.workspace.collections[ci].requests[ri].name.clone())
+            app.find_request(id)
+                .map(|(ci, ri)| app.workspace.collections[ci].requests[ri].name.clone())
         };
         self.workspace.quick_slots.retain(|_, v| *v != id);
-        let replaced = self.workspace.quick_slots.insert(slot, id).and_then(|old| name(self, old));
+        let replaced = self
+            .workspace
+            .quick_slots
+            .insert(slot, id)
+            .and_then(|old| name(self, old));
         self.persist();
         let this = name(self, id).unwrap_or_default();
         self.status_message = match replaced {
@@ -527,12 +579,17 @@ impl App {
 
     /// `space <digit>`: open the request in that slot.
     pub fn open_slot(&mut self, slot: u8) {
-        let target = self.workspace.quick_slots.get(&slot).and_then(|id| self.find_request(*id));
+        let target = self
+            .workspace
+            .quick_slots
+            .get(&slot)
+            .and_then(|id| self.find_request(*id));
         match target {
             Some((ci, ri)) => self.load_request(ci, ri),
             None => {
-                self.status_message =
-                    format!("space {slot} is empty — in the tabs sidebar (space t), select a tab and press m {slot}")
+                self.status_message = format!(
+                    "space {slot} is empty — in the tabs sidebar (space t), select a tab and press m {slot}"
+                )
             }
         }
     }
@@ -618,7 +675,10 @@ impl App {
             }
         }
         self.current.sync_path_params();
-        self.source = Some(RequestSource { collection_index: coll_idx, request_index: req_idx });
+        self.source = Some(RequestSource {
+            collection_index: coll_idx,
+            request_index: req_idx,
+        });
         self.response_view = None;
         self.header_index = 0;
         self.form_field_index = 0;
@@ -785,7 +845,12 @@ impl App {
         }
     }
 
-    pub fn push_history(&mut self, sent: &RequestItem, status: Option<u16>, duration_ms: Option<u128>) {
+    pub fn push_history(
+        &mut self,
+        sent: &RequestItem,
+        status: Option<u16>,
+        duration_ms: Option<u128>,
+    ) {
         self.history.push(HistoryEntry {
             timestamp: chrono::Local::now(),
             request_id: self.find_request(sent.id).map(|_| sent.id),
@@ -831,11 +896,19 @@ impl App {
         }
         self.response_history.clear();
         for r in kept {
-            self.response_history.entry(r.request_id).or_default().push(r);
+            self.response_history
+                .entry(r.request_id)
+                .or_default()
+                .push(r);
         }
     }
 
-    fn record_response(&mut self, request_id: Uuid, response: Option<&ResponseData>, error: Option<&str>) {
+    fn record_response(
+        &mut self,
+        request_id: Uuid,
+        response: Option<&ResponseData>,
+        error: Option<&str>,
+    ) {
         let mut truncated = false;
         let response = response.map(|r| {
             let mut r = r.clone();
@@ -867,7 +940,12 @@ impl App {
 
     /// A finished send. It lands on the request that was sent — which may no longer
     /// be the one on screen if the user switched tabs while it was in flight.
-    pub fn deliver_response(&mut self, sent: &RequestItem, response: Option<ResponseData>, error: Option<String>) {
+    pub fn deliver_response(
+        &mut self,
+        sent: &RequestItem,
+        response: Option<ResponseData>,
+        error: Option<String>,
+    ) {
         self.record_response(sent.id, response.as_ref(), error.as_deref());
         if self.current.id == sent.id {
             self.response = response;
@@ -883,13 +961,24 @@ impl App {
             let mut item = self.workspace.collections[ci].requests[ri].clone();
             item.sync_path_params();
             let buffers = EditorBuffers::from_item(&item);
-            self.drafts.insert(sent.id, RequestDraft { item, response: None, last_error: None, buffers });
+            self.drafts.insert(
+                sent.id,
+                RequestDraft {
+                    item,
+                    response: None,
+                    last_error: None,
+                    buffers,
+                },
+            );
         }
         if let Some(draft) = self.drafts.get_mut(&sent.id) {
             draft.response = response;
             draft.last_error = error;
         }
-        self.status_message = format!("Response for '{}' arrived — switch to its tab to see it", sent.name);
+        self.status_message = format!(
+            "Response for '{}' arrived — switch to its tab to see it",
+            sent.name
+        );
     }
 
     /// `x` in the Response pane: run the loaded request's post-response script (as it
@@ -905,7 +994,8 @@ impl App {
             None => self.response.clone(),
         };
         let Some(resp) = shown else {
-            self.status_message = "No response on screen to run the post-response script against".into();
+            self.status_message =
+                "No response on screen to run the post-response script against".into();
             return;
         };
         let script = self.post_script_state.lines.to_string();
@@ -920,9 +1010,12 @@ impl App {
             None => "the latest response".to_string(),
         };
         self.push_script_log(
-            std::iter::once(format!("— post-response script run manually on {label} ({}) —", resp.status))
-                .chain(outcome.logs)
-                .collect(),
+            std::iter::once(format!(
+                "— post-response script run manually on {label} ({}) —",
+                resp.status
+            ))
+            .chain(outcome.logs)
+            .collect(),
         );
         self.replace_environment_matching_id(env);
         self.status_message = match outcome.error {
@@ -933,7 +1026,10 @@ impl App {
 
     /// `[` / `]` in the Response pane: step to an older / newer past response.
     pub fn step_response_history(&mut self, older: bool) {
-        let n = self.response_history.get(&self.current.id).map_or(0, Vec::len);
+        let n = self
+            .response_history
+            .get(&self.current.id)
+            .map_or(0, Vec::len);
         if n == 0 {
             self.status_message = "No response history for this request yet".into();
             return;
@@ -980,12 +1076,21 @@ impl App {
     /// Requests worth keeping across a restart: unsaved edits, a response/error, or undo history.
     fn session_snapshot(&self) -> StoredSession {
         let mut drafts = HashMap::new();
-        let mut keep = |id: Uuid, item: &RequestItem, resp: &Option<ResponseData>, err: &Option<String>, buffers: &EditorBuffers| {
+        let mut keep = |id: Uuid,
+                        item: &RequestItem,
+                        resp: &Option<ResponseData>,
+                        err: &Option<String>,
+                        buffers: &EditorBuffers| {
             let history = buffers.to_stored();
             if self.is_dirty(id) || resp.is_some() || err.is_some() || !history.is_empty() {
                 drafts.insert(
                     id,
-                    StoredDraft { item: item.clone(), response: resp.clone(), last_error: err.clone(), history },
+                    StoredDraft {
+                        item: item.clone(),
+                        response: resp.clone(),
+                        last_error: err.clone(),
+                        history,
+                    },
                 );
             }
         };
@@ -1003,7 +1108,13 @@ impl App {
             item.pre_request_script = self.pre_script_state.lines.to_string();
             item.post_response_script = self.post_script_state.lines.to_string();
             item.sync_path_params();
-            keep(self.current.id, &item, &self.response, &self.last_error, &self.live_buffers());
+            keep(
+                self.current.id,
+                &item,
+                &self.response,
+                &self.last_error,
+                &self.live_buffers(),
+            );
         }
         StoredSession { drafts }
     }
@@ -1026,7 +1137,12 @@ impl App {
             let buffers = EditorBuffers::from_stored(&d.item, &d.history);
             self.drafts.insert(
                 id,
-                RequestDraft { item: d.item, response: d.response, last_error: d.last_error, buffers },
+                RequestDraft {
+                    item: d.item,
+                    response: d.response,
+                    last_error: d.last_error,
+                    buffers,
+                },
             );
         }
         let last = self
@@ -1049,7 +1165,8 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
         let state = &mut app.body_state;
-        app.editor_events.on_key_event(KeyEvent::new(code, mods), state);
+        app.editor_events
+            .on_key_event(KeyEvent::new(code, mods), state);
     }
 
     use crate::test_support::isolated_storage;
@@ -1067,7 +1184,12 @@ mod tests {
     }
 
     fn resp(status: u16) -> ResponseData {
-        ResponseData { status, headers: vec![], body: format!("body {status}"), duration_ms: 5 }
+        ResponseData {
+            status,
+            headers: vec![],
+            body: format!("body {status}"),
+            duration_ms: 5,
+        }
     }
 
     #[test]
@@ -1104,7 +1226,10 @@ mod tests {
         let mut app2 = App::new(app.workspace.clone());
         app2.load_response_history(crate::storage::load_responses());
         assert_eq!(app2.response_history[&a_id].len(), RESPONSES_PER_REQUEST);
-        assert!(crate::storage::load_responses().len() == RESPONSES_PER_REQUEST, "file compacted");
+        assert!(
+            crate::storage::load_responses().len() == RESPONSES_PER_REQUEST,
+            "file compacted"
+        );
     }
 
     #[test]
@@ -1126,11 +1251,19 @@ mod tests {
         app.step_response_history(true); // now showing the 200
         app.run_post_script_on_shown_response();
         let seen = |app: &App| {
-            app.active_environment()
-                .and_then(|e| e.variables.iter().find(|(k, _)| k == "seen").map(|(_, v)| v.clone()))
+            app.active_environment().and_then(|e| {
+                e.variables
+                    .iter()
+                    .find(|(k, _)| k == "seen")
+                    .map(|(_, v)| v.clone())
+            })
         };
         assert_eq!(seen(&app).as_deref(), Some("200"), "{}", app.status_message);
-        assert_eq!(app.response.as_ref().unwrap().status, 201, "live response untouched");
+        assert_eq!(
+            app.response.as_ref().unwrap().status,
+            201,
+            "live response untouched"
+        );
 
         app.step_response_history(false); // back to latest
         app.run_post_script_on_shown_response();
@@ -1154,7 +1287,11 @@ mod tests {
         // A slot holds one request: taking 3 for `a` removes `b`.
         app.assign_slot(a_id, 3);
         assert_eq!((app.slot_of(a_id), app.slot_of(b_id)), (Some(3), None));
-        assert!(app.status_message.contains("was 'b'"), "{}", app.status_message);
+        assert!(
+            app.status_message.contains("was 'b'"),
+            "{}",
+            app.status_message
+        );
 
         app.open_slot(3);
         assert_eq!(app.current.id, a_id);
@@ -1170,7 +1307,9 @@ mod tests {
 
         // Slots of deleted requests are dropped.
         app.assign_slot(b_id, 5);
-        app.workspace.collections[0].requests.retain(|r| r.id != b_id);
+        app.workspace.collections[0]
+            .requests
+            .retain(|r| r.id != b_id);
         app.prune_tabs();
         assert!(app.workspace.quick_slots.is_empty());
     }
@@ -1203,7 +1342,11 @@ mod tests {
         app2.load_request(0, 0);
         assert_eq!(app2.body_state.lines.to_string(), "xyz");
         press(&mut app2, KeyCode::Char('u'), KeyModifiers::NONE);
-        assert_eq!(app2.body_state.lines.to_string(), "x", "undo history restored");
+        assert_eq!(
+            app2.body_state.lines.to_string(),
+            "x",
+            "undo history restored"
+        );
         press(&mut app2, KeyCode::Char('r'), KeyModifiers::CONTROL);
         assert_eq!(app2.body_state.lines.to_string(), "xyz", "redo works too");
 

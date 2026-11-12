@@ -15,7 +15,7 @@ pub async fn send_request(req: &RequestItem, env: Option<&Environment>) -> Resul
     if url::Url::parse(&url).is_err() {
         anyhow::bail!(
             "'{url}' is not a valid URL (missing scheme? try https://...) \
-             — check for unresolved {{{{var}}}} placeholders (see the 'e' environment manager) \
+             — check for unresolved {{{{var}}}} placeholders (see the environment manager, space e) \
              or empty :param values (see the Path Params panel)"
         );
     }
@@ -82,14 +82,17 @@ async fn apply_body(
                     FormValue::Text(v) => form.text(key, resolve(v)),
                     FormValue::File(path) => {
                         let path = resolve(path);
-                        let bytes = tokio::fs::read(&path)
-                            .await
-                            .with_context(|| format!("failed to read file '{path}' for form field '{key}'"))?;
+                        let bytes = tokio::fs::read(&path).await.with_context(|| {
+                            format!("failed to read file '{path}' for form field '{key}'")
+                        })?;
                         let file_name = std::path::Path::new(&path)
                             .file_name()
                             .map(|s| s.to_string_lossy().into_owned())
                             .unwrap_or_else(|| "file".to_string());
-                        form.part(key, reqwest::multipart::Part::bytes(bytes).file_name(file_name))
+                        form.part(
+                            key,
+                            reqwest::multipart::Part::bytes(bytes).file_name(file_name),
+                        )
                     }
                 };
             }
