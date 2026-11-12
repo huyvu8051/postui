@@ -37,6 +37,7 @@ HTTP task (reqwest)      ──► AppEvent::Response ────────�
 | `http.rs` | Building and sending the request (substitution, body types) |
 | `format.rs` | JSON pretty-printing |
 | `pager.rs` | Hands the terminal to `$PAGER` and takes it back (`o` in the Response pane) |
+| `save.rs` | Saving response bodies: suggested names (`Content-Disposition`), Tab path completion, free names on conflict |
 | `logger.rs` | Append-only error log |
 | `test_support.rs` | Test helpers (isolated storage) |
 

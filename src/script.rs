@@ -322,6 +322,7 @@ mod tests {
             headers: vec![],
             body: String::new(),
             duration_ms: 0,
+            ..Default::default()
         };
         let out = run_post_response("pm.console.log(type(pm.clipboard.set))", &resp, &mut env);
         assert_eq!(out.error, None);
@@ -347,6 +348,7 @@ mod tests {
             headers: vec![],
             body: String::new(),
             duration_ms: 0,
+            ..Default::default()
         };
         let mut env = env();
         let script = r#"

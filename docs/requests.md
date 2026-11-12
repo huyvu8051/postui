@@ -88,14 +88,43 @@ from the Response pane in Navigate mode:
 
 - `o` opens the whole body, pretty-printed if it's JSON, in `$PAGER` (default
   `less`; e.g. `export PAGER="less -S"`). Quit the pager to return.
-- `S` saves the body exactly as received; it suggests a file in your
-  Downloads folder named after the request.
+- `S` saves the body exactly as received (see below).
 
 Both keys work for any response, not only large ones.
 
 Independently of size, lines longer than 1000 characters (minified JSON or
 HTML, base64 fields) are split for display, and the title says `long lines
 split`; `o` and `S` still give you the original.
+
+### Binary responses
+
+Responses that aren't text (by `Content-Type`, or an `attachment`
+`Content-Disposition`), and text that isn't valid UTF-8, are streamed to a
+temp file while they download instead of being held in memory, so a multi-GB
+zip costs no RAM. The Response pane shows `Binary body · 2.3 MB ·
+application/zip — S: save to file`. Temp files live in the data directory's
+`bodies/` folder and are removed when the response is replaced, its tab is
+closed, or postui quits. Past binary responses in the history keep only their
+size and type.
+
+### Saving a response body
+
+`S` in the Response pane (Navigate mode) opens a path input:
+
+- It suggests the folder this request's body was last saved to (else your
+  Downloads folder) and the file name from the server's `Content-Disposition`
+  (else the name used last time, else `<request name>.<extension for the
+  Content-Type>`). Server-provided names are reduced to a plain file name, so a
+  response can't make postui write outside the folder you chose.
+- `Tab` completes folder and file names like a shell; pressing it again cycles
+  through the matches. A path ending in `/` (or an existing folder) saves the
+  suggested file name into it.
+- `Enter` saves. If the file exists you get a choice: `o` overwrites, `n` fills
+  in a free name such as `documents (1).zip` (edit it if you like, then
+  `Enter`), `Esc` goes back to editing the path.
+
+The folder is remembered per request (in `workspace.json`), so the next save of
+the same endpoint lands in the same place.
 
 ### Response history
 

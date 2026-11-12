@@ -42,9 +42,10 @@ cols = [{"id": str(uuid.uuid4()), "name": f"c{c}",
 small = req("small", f"http://127.0.0.1:{port}/small.json")
 big = req("big response", f"http://127.0.0.1:{port}/big.json")
 oneline = req("one-line response", f"http://127.0.0.1:{port}/oneline.txt")
+bigzip = req("big zip", f"http://127.0.0.1:{port}/big.zip")
 bodies = [req(f"big body {i}", f"http://127.0.0.1:{port}/small.json", big_body) for i in range(4)]
-cols.append({"id": str(uuid.uuid4()), "name": "audit", "requests": [small, big, oneline] + bodies})
-slots = {"9": small["id"], "7": big["id"], "6": oneline["id"]}
+cols.append({"id": str(uuid.uuid4()), "name": "audit", "requests": [small, big, oneline, bigzip] + bodies})
+slots = {"9": small["id"], "7": big["id"], "6": oneline["id"], "5": bigzip["id"]}
 slots.update({str(i + 1): b["id"] for i, b in enumerate(bodies)})          # space 1..4
 ws = {"collections": cols, "environments": [], "active_environment": None, "recent_requests": [],
       "open_tabs": [small["id"], big["id"], oneline["id"]] + [b["id"] for b in bodies],
@@ -55,6 +56,8 @@ items = [{"id": i, "name": f"item {i}", "tags": ["a", "b"], "y": "lorem ipsum do
 json.dump({"items": items}, open(os.path.join(work, "big.json"), "w"))                 # ~5 MB, one line
 open(os.path.join(work, "oneline.txt"), "w").write("z" * 900_000)                    # 900 KB, one line
 json.dump({"ok": True}, open(os.path.join(work, "small.json"), "w"))
+with open(os.path.join(work, "big.zip"), "wb") as f:                                   # 50 MB binary
+    f.write(os.urandom(50 * 1024 * 1024))
 PY
 
 (cd "$WORK" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1) & SRV=$!
@@ -76,6 +79,7 @@ driver() {
   sleep 2.5; mark;                                                      rep "startup (708 requests)"
   mark; k ' ' 0.2; k '7' 0.6; k '\033[15~' 4;                           rep "5 MB single-line JSON response"
   mark; k ' ' 0.2; k '6' 0.6; k '\033[15~' 3;                           rep "900 KB single-line text response"
+  mark; k ' ' 0.2; k '5' 0.6; k '\033[15~' 5;                           rep "50 MB binary download (streamed to disk)"
   mark; for _ in $(seq 1 20); do k 'j' 0.2; k 'k' 0.2; done; sleep 1.5; rep "40 navigation keys"
   mark; for _ in $(seq 1 5); do k ' ' 0.1; k '9' 0.5; k ' ' 0.1; k '7' 0.8; done; sleep 1.5; rep "10 tab switches incl. the 5 MB one"
   mark; edit_body 1 30;                                                 rep "30 edits in a 290 KB body (undo)"
@@ -101,13 +105,15 @@ kill "$WD" "$MON" 2>/dev/null || true
 printf "postui %s on %s\n\n" "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')" "$(uname -sm)"
 cat "$LOG"
 echo
+leftover=$( { find "$DATA/bodies" -type f 2>/dev/null || true; } | wc -l | tr -d ' ')
+echo "  temp bodies left after quit: $leftover"
 for f in workspace.json drafts.json responses.jsonl history.json; do
   [ -f "$DATA/$f" ] && awk -v f="$f" -v b="$(wc -c < "$DATA/$f")" 'BEGIN{printf "  %-16s %6.1f MB\n", f, b/1048576}'
 done
 busy=$(awk '$1 > 50 {n++} END {print n+0}' "$CPULOG")
 echo
 echo "CPU samples over 50%: $busy of $(wc -l < "$CPULOG" | tr -d ' ')"
-if grep -q WATCHDOG "$LOG" || [ "$busy" -gt 3 ]; then
+if grep -q WATCHDOG "$LOG" || [ "$busy" -gt 3 ] || [ "$leftover" -gt 0 ]; then
   echo "FAIL: postui looks stuck or busy"; exit 1
 fi
 echo "OK"

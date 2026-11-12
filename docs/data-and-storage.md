@@ -12,10 +12,11 @@ postui keeps everything in one directory:
 
 | File | Contents | Written |
 |---|---|---|
-| `workspace.json` | Collections and saved requests, environments, open tabs, quick slots, recent requests | Immediately for saves, creating/deleting, environments and quick slots; with the next autosave (about 1 s later) for opening requests and changing tabs; on quit |
+| `workspace.json` | Collections and saved requests, environments, open tabs, quick slots, recent requests, where each request's response body was last saved | Immediately for saves, creating/deleting, environments and quick slots; with the next autosave (about 1 s later) for opening requests and changing tabs; on quit |
 | `drafts.json` | Per request: unsaved edits and the undo/redo history of its buffers | About 1 s after you stop typing (at most ~5 s while typing continuously) and on quit, only if something changed |
 | `responses.jsonl` | Response history, one JSON object per line. Only a summary of each is kept in memory; a body is read from disk when you view it, and the latest one is shown again when you reopen the request | Appended after every response; compacted at startup |
 | `history.json` | Sent-request log (time, method, URL, name, status, duration) | After every send |
+| `bodies/` | Binary response bodies of the current session (temp files) | While downloading; cleared when replaced, on quit and on start |
 | `postui.log` | Errors (failed requests, failed saves) | When something goes wrong |
 
 `drafts.json` and `responses.jsonl` are written through a temporary file and

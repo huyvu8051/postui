@@ -132,6 +132,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let selected = *selected;
             draw_history_popup(f, app, selected)
         }
+        Popup::SaveResponse {
+            path,
+            completion,
+            conflict,
+        } => {
+            let candidates = completion.candidates.clone();
+            let index = completion.index;
+            let conflict = conflict.clone();
+            draw_save_response_popup(f, path, &candidates, index, conflict.as_deref());
+        }
         Popup::CollectionFinder { .. } => unreachable!("handled above"),
     }
 
@@ -791,6 +801,13 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
             r.duration_ms,
             crate::app::human_size(total)
         )
+    } else if let Some(r) = app.response.as_ref().filter(|r| r.binary) {
+        format!(
+            " Response{counter} — {} ({} ms, binary {}) — {hint}S: save to file ",
+            r.status,
+            r.duration_ms,
+            crate::app::human_size(r.size as usize)
+        )
     } else if let Some(r) = &app.response {
         let kind = match (app.response_is_json, app.response_wrapped) {
             (true, true) => ", JSON, long lines split",
@@ -838,6 +855,78 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let status =
         Paragraph::new(app.status_message.as_str()).style(Style::default().fg(Color::Gray));
     f.render_widget(status, area);
+}
+
+fn draw_save_response_popup(
+    f: &mut Frame,
+    path: &mut EditorState,
+    candidates: &[String],
+    index: Option<usize>,
+    conflict: Option<&std::path::Path>,
+) {
+    let shown = candidates.len().min(8) as u16;
+    let width = (f.area().width as u32 * 8 / 10) as u16;
+    let height = 3 + if shown > 0 { shown + 2 } else { 0 } + 1;
+    let area = centered_rect(width, height, f.area());
+    f.render_widget(Clear, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    let theme = editor_theme(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(format!(
+                " Save response body [{}] — Tab: complete, Enter: save, Esc: normal/cancel ",
+                mode_label(path.mode)
+            )),
+    );
+    f.render_widget(
+        EditorView::new(path).theme(theme).single_line(true),
+        rows[0],
+    );
+
+    if shown > 0 {
+        let items: Vec<ListItem> = candidates
+            .iter()
+            .map(|c| ListItem::new(c.as_str()))
+            .collect();
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(index);
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Tab again to cycle "),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        f.render_stateful_widget(list, rows[1], &mut state);
+    }
+
+    let footer = match conflict {
+        Some(p) => Paragraph::new(format!(
+            " {} already exists — o: overwrite · n: save under a new name · Esc: back ",
+            p.file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default()
+        ))
+        .style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+        None => Paragraph::new(" A folder (ending in /) saves with the suggested file name ")
+            .style(Style::default().fg(Color::DarkGray)),
+    };
+    f.render_widget(Clear, rows[2]);
+    f.render_widget(footer, rows[2]);
 }
 
 fn draw_text_input_popup(f: &mut Frame, title: &str, state: &mut EditorState) {

@@ -225,6 +225,7 @@ mod tests {
             headers: vec![("a".into(), "b".into())],
             body: "{}".into(),
             duration_ms: 1234,
+            ..Default::default()
         };
         let back: ResponseData =
             serde_json::from_str(&serde_json::to_string(&resp).unwrap()).unwrap();

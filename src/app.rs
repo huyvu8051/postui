@@ -114,7 +114,6 @@ pub enum TextInputTarget {
     NewRequestName(usize),
     NewEnvName,
     BinaryFilePath,
-    SaveResponseBody,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +160,13 @@ pub enum Popup {
     History {
         selected: usize,
     },
+    /// Save the response body to a file (`S` in the Response pane).
+    SaveResponse {
+        path: EditorState,
+        completion: crate::save::PathCompletion,
+        /// The chosen file exists: waiting for `o` (overwrite), `n` (new name) or Esc.
+        conflict: Option<std::path::PathBuf>,
+    },
     CollectionFinder {
         query: EditorState,
         selected: usize,
@@ -186,6 +192,16 @@ pub fn vim_line_state(text: &str) -> EditorState {
     state.set_single_line(true);
     state.mode = EditorMode::Normal;
     state
+}
+
+/// What happened when saving a response body to a file.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SaveResult {
+    Saved,
+    /// The file exists and overwriting wasn't confirmed.
+    Exists(std::path::PathBuf),
+    /// Nothing written; the status line says why.
+    Failed,
 }
 
 #[derive(Clone)]
@@ -661,9 +677,12 @@ impl App {
             return;
         };
         self.workspace.open_tabs.remove(pos);
-        self.drafts.remove(&id);
+        if let Some(draft) = self.drafts.remove(&id) {
+            discard_body_file(draft.response.as_ref());
+        }
         let closing_current = self.source.is_some() && self.current.id == id;
         if closing_current {
+            discard_body_file(self.response.take().as_ref());
             // Don't let load_request stash the tab we're discarding.
             self.source = None;
             let next = self
@@ -846,7 +865,19 @@ impl App {
                     out.push('\n');
                 }
                 out.push('\n');
-                let body = if resp.body.len() > LIGHT_MODE_BYTES {
+                let body = if resp.binary {
+                    self.response_is_json = false;
+                    let kind = resp.header("content-type").unwrap_or("no content type");
+                    let action = if resp.body_file.is_some() {
+                        "S: save to file"
+                    } else {
+                        "past binary bodies aren't kept; send again to save it"
+                    };
+                    format!(
+                        "── Binary body · {} · {kind} — {action} ──",
+                        human_size(resp.size as usize)
+                    )
+                } else if resp.body.len() > LIGHT_MODE_BYTES {
                     // Light mode: a fully pretty-printed, highlighted multi-MB buffer costs
                     // ~20x the body in memory, so show only the start and offer the rest.
                     self.response_is_json = false;
@@ -1070,7 +1101,7 @@ impl App {
         self.end_send(sent.id);
         self.record_response(sent.id, response.as_ref(), error.as_deref());
         if self.current.id == sent.id {
-            self.response = response;
+            discard_body_file(std::mem::replace(&mut self.response, response).as_ref());
             self.last_error = error;
             self.response_view = None;
             self.viewed_response = None;
@@ -1095,7 +1126,7 @@ impl App {
             );
         }
         if let Some(draft) = self.drafts.get_mut(&sent.id) {
-            draft.response = response;
+            discard_body_file(std::mem::replace(&mut draft.response, response).as_ref());
             draft.last_error = error;
         }
         self.status_message = format!(
@@ -1154,6 +1185,10 @@ impl App {
             self.status_message = "No response body to open".into();
             return;
         };
+        if resp.binary {
+            self.status_message = "The body is binary; use S to save it to a file".into();
+            return;
+        }
         let (text, ext) = match crate::format::pretty_json(&resp.body) {
             Some(pretty) => (pretty, "json"),
             None => (resp.body.clone(), "txt"),
@@ -1167,48 +1202,110 @@ impl App {
         }
     }
 
-    /// Suggested path for `S`: the Downloads folder (or home), named after the request.
-    pub fn default_response_save_path(&self) -> String {
-        let dir = dirs::download_dir()
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let name: String = self
-            .current
-            .name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let is_json = self
-            .shown_response()
-            .is_some_and(|r| crate::format::pretty_json(&r.body).is_some());
-        let file = format!(
-            "{name}-{}.{}",
-            chrono::Local::now().format("%Y%m%d-%H%M%S"),
-            if is_json { "json" } else { "txt" }
-        );
-        dir.join(file).display().to_string()
-    }
-
-    /// `S` in the Response pane (after confirming the path): write the body as received.
-    pub fn save_shown_response(&mut self, path: &str) {
-        let Some(body) = self.shown_response().map(|r| r.body.clone()) else {
+    /// `S`: open the save popup with the suggested path.
+    pub fn open_save_response(&mut self) {
+        let Some(resp) = self.shown_response() else {
             self.status_message = "No response body to save".into();
             return;
         };
-        let path = match path.strip_prefix("~/") {
-            Some(rest) => dirs::home_dir().map_or_else(|| path.into(), |h| h.join(rest)),
-            None => std::path::PathBuf::from(path),
+        if resp.binary && resp.body_file.is_none() {
+            self.status_message =
+                "This past binary body isn't kept; send the request again to save it".into();
+            return;
+        }
+        let mut path = vim_line_state(&self.suggested_save_path());
+        let len = path.lines.len_col(0).unwrap_or(0);
+        path.cursor = edtui::Index2::new(0, len.saturating_sub(1));
+        self.popup = Popup::SaveResponse {
+            path,
+            completion: Default::default(),
+            conflict: None,
         };
-        self.status_message = match std::fs::write(&path, &body) {
-            Ok(()) => format!("Saved {} to {}", human_size(body.len()), path.display()),
-            Err(e) => format!("Couldn't save to {}: {e}", path.display()),
+    }
+
+    /// Folder: where this request's body was saved last time, else Downloads (or
+    /// home). Name: the server's `Content-Disposition` file name, else the name used
+    /// last time, else `<request name>.<extension for the content type>`.
+    pub fn suggested_save_path(&self) -> String {
+        let last = self
+            .workspace
+            .response_save_paths
+            .get(&self.current.id)
+            .map(std::path::PathBuf::from);
+        let dir = last
+            .as_ref()
+            .and_then(|p| p.parent())
+            .filter(|d| d.is_dir())
+            .map(std::path::Path::to_path_buf)
+            .or_else(dirs::download_dir)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let resp = self.shown_response();
+        let from_server = resp
+            .and_then(|r| r.header("content-disposition"))
+            .and_then(crate::save::filename_from_content_disposition);
+        let from_last = last
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned());
+        let name = from_server.or(from_last).unwrap_or_else(|| {
+            let base = crate::save::sanitize_file_name(&self.current.name)
+                .unwrap_or_else(|| "response".into());
+            let ext = crate::save::extension_for_content_type(
+                resp.and_then(|r| r.header("content-type")),
+                resp.is_some_and(|r| r.binary),
+            );
+            format!("{base}.{ext}")
+        });
+        let mut path = dir.join(name).display().to_string();
+        if let Some(home) = dirs::home_dir().map(|h| h.display().to_string())
+            && let Some(rest) = path.strip_prefix(&home)
+        {
+            path = format!("~{rest}");
+        }
+        path
+    }
+
+    /// Write the body on screen to `input`: a file path, or a folder (ending in `/`
+    /// or existing) to put the suggested file name in. An existing file is only
+    /// replaced when `overwrite` is set. On success the path is remembered for this
+    /// request, to suggest the same folder next time.
+    pub fn save_response_to(&mut self, input: &str, overwrite: bool) -> SaveResult {
+        let input = input.trim();
+        if input.is_empty() {
+            self.status_message = "Type a path to save to".into();
+            return SaveResult::Failed;
+        }
+        let mut path = crate::save::expand_tilde(input);
+        if input.ends_with('/') || path.is_dir() {
+            let suggested = crate::save::expand_tilde(&self.suggested_save_path());
+            path = path.join(suggested.file_name().unwrap_or_default());
+        }
+        if path.exists() && !overwrite {
+            return SaveResult::Exists(path);
+        }
+        let Some(resp) = self.shown_response() else {
+            self.status_message = "No response body to save".into();
+            return SaveResult::Failed;
         };
+        let written = match &resp.body_file {
+            Some(file) => std::fs::copy(file, &path).map(|n| n as usize),
+            None => std::fs::write(&path, &resp.body).map(|()| resp.body.len()),
+        };
+        match written {
+            Ok(bytes) => {
+                self.status_message = format!("Saved {} to {}", human_size(bytes), path.display());
+                self.workspace
+                    .response_save_paths
+                    .insert(self.current.id, path.display().to_string());
+                self.persist();
+                SaveResult::Saved
+            }
+            Err(e) => {
+                self.status_message = format!("Couldn't save to {}: {e}", path.display());
+                SaveResult::Failed
+            }
+        }
     }
 
     /// `[` / `]` in the Response pane: step to an older / newer past response.
@@ -1387,6 +1484,13 @@ impl App {
     }
 }
 
+/// Delete the temp file of a binary body that is no longer referenced.
+fn discard_body_file(resp: Option<&ResponseData>) {
+    if let Some(path) = resp.and_then(|r| r.body_file.as_ref()) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Largest char boundary at or below `max` (str::floor_char_boundary is unstable).
 fn floor_char_boundary(s: &str, max: usize) -> usize {
     let mut cut = max.min(s.len());
@@ -1464,6 +1568,7 @@ mod tests {
             headers: vec![],
             body: format!("body {status}"),
             duration_ms: 5,
+            ..Default::default()
         }
     }
 
@@ -1730,6 +1835,7 @@ mod tests {
             headers: vec![],
             body,
             duration_ms: 1,
+            ..Default::default()
         }
     }
 
@@ -1781,6 +1887,7 @@ mod tests {
                 headers: vec![],
                 body,
                 duration_ms: 1,
+                ..Default::default()
             };
             app.deliver_response(&sent, Some(r), None);
             let longest = app
@@ -1810,19 +1917,91 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("postui-save-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let target = dir.join("body.json");
-        app.save_shown_response(target.to_str().unwrap());
+        assert_eq!(
+            app.save_response_to(target.to_str().unwrap(), false),
+            SaveResult::Saved
+        );
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
             big.body,
             "saved as received"
         );
-        assert!(app.default_response_save_path().ends_with(".json"));
 
         app.open_shown_response_in_pager();
         let pager_file = app.pending_pager.take().expect("pager requested");
         let text = std::fs::read_to_string(&pager_file).unwrap();
         assert!(text.len() > big.body.len(), "pretty-printed, not truncated");
         let _ = std::fs::remove_file(pager_file);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A binary response streamed to a temp file: saving copies its exact bytes,
+    /// names it from Content-Disposition, remembers the folder per request, and asks
+    /// before overwriting.
+    #[test]
+    fn binary_bodies_save_byte_for_byte_and_remember_the_folder() {
+        let _storage = isolated_storage();
+        let (ws, a_id, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        let sent = app.current.clone();
+
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(300_000).collect(); // not UTF-8
+        let tmp = crate::storage::bodies_dir().unwrap().join("test.bin");
+        std::fs::write(&tmp, &bytes).unwrap();
+        let zip = ResponseData {
+            status: 200,
+            headers: vec![
+                ("content-type".into(), "application/zip".into()),
+                (
+                    "content-disposition".into(),
+                    r#"attachment; filename="documents.zip""#.into(),
+                ),
+            ],
+            binary: true,
+            size: bytes.len() as u64,
+            body_file: Some(tmp.clone()),
+            ..Default::default()
+        };
+        app.deliver_response(&sent, Some(zip), None);
+        assert!(app.response_state.lines.to_string().contains("Binary body"));
+
+        let dir = std::env::temp_dir().join(format!("postui-save-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let folder = format!("{}/", dir.display());
+        assert_eq!(app.save_response_to(&folder, false), SaveResult::Saved);
+        let saved = dir.join("documents.zip");
+        assert_eq!(std::fs::read(&saved).unwrap(), bytes, "exact bytes");
+
+        // Remembered per request, and saved immediately with the workspace.
+        assert_eq!(
+            crate::storage::load()
+                .unwrap()
+                .response_save_paths
+                .get(&a_id)
+                .map(String::as_str),
+            Some(saved.display().to_string().as_str())
+        );
+        let suggested = crate::save::expand_tilde(&app.suggested_save_path());
+        assert_eq!(suggested, saved, "same folder, server's file name");
+
+        // Same name again: not overwritten without confirmation.
+        assert_eq!(
+            app.save_response_to(saved.to_str().unwrap(), false),
+            SaveResult::Exists(saved.clone())
+        );
+        assert_eq!(
+            crate::save::next_free_path(&saved),
+            dir.join("documents (1).zip")
+        );
+        assert_eq!(
+            app.save_response_to(saved.to_str().unwrap(), true),
+            SaveResult::Saved
+        );
+
+        // Replacing the response frees the old temp file.
+        app.deliver_response(&sent, Some(resp(200)), None);
+        assert!(!tmp.exists(), "temp body removed");
         let _ = std::fs::remove_dir_all(dir);
     }
 

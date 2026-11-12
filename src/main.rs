@@ -6,6 +6,7 @@ mod http;
 mod logger;
 mod model;
 mod pager;
+mod save;
 mod script;
 mod session;
 mod storage;
@@ -54,6 +55,7 @@ enum AppEvent {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    storage::clear_bodies_dir(); // binary bodies streamed by an earlier run
     let workspace = storage::load()?;
     let mut app = App::new(workspace);
     app.prune_tabs();
@@ -137,6 +139,7 @@ async fn main() -> Result<()> {
         DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
+    storage::clear_bodies_dir();
 
     result
 }

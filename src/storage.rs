@@ -15,6 +15,21 @@ fn data_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Where binary response bodies are streamed while a session runs (see `http.rs`).
+pub fn bodies_dir() -> Result<PathBuf> {
+    let dir = data_dir()?.join("bodies");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Remove streamed bodies from earlier runs (or this one, on quit). Nothing refers to
+/// them across sessions.
+pub fn clear_bodies_dir() {
+    if let Ok(dir) = data_dir().map(|d| d.join("bodies")) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 fn workspace_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("workspace.json"))
 }

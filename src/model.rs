@@ -284,6 +284,9 @@ pub struct Workspace {
     /// Quick-open slots: digit (1-9) → request, opened with `space <digit>`.
     #[serde(default)]
     pub quick_slots: std::collections::BTreeMap<u8, Uuid>,
+    /// Where each request's response body was last saved (`S`), to suggest the folder.
+    #[serde(default)]
+    pub response_save_paths: std::collections::BTreeMap<Uuid, String>,
 }
 
 /// One sent request, newest last. `status` is None when the request failed.
@@ -329,10 +332,32 @@ pub struct ResponseMeta {
     pub offset: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResponseData {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+    /// The body as text; empty for a binary body (see `body_file`).
     pub body: String,
     pub duration_ms: u128,
+    /// The body isn't text (or isn't valid UTF-8). Its bytes are in `body_file` while
+    /// the response is live; history keeps only that fact and the size.
+    #[serde(default)]
+    pub binary: bool,
+    /// Body size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// Temp file holding a binary body (in the data dir's `bodies/`, cleared on start
+    /// and quit). Never serialized: it doesn't outlive the session.
+    #[serde(skip)]
+    pub body_file: Option<std::path::PathBuf>,
+}
+
+impl ResponseData {
+    /// First header with this name (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }

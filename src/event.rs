@@ -159,17 +159,7 @@ fn handle_navigate_key(app: &mut App, key: KeyEvent) {
             app.run_post_script_on_shown_response()
         }
         KeyCode::Char('o') if app.focus == Focus::Response => app.open_shown_response_in_pager(),
-        KeyCode::Char('S') if app.focus == Focus::Response => {
-            if app.shown_response().is_none() {
-                app.status_message = "No response body to save".into();
-            } else {
-                app.popup = Popup::TextInput {
-                    title: "Save response body to".to_string(),
-                    state: vim_line_state(&app.default_response_save_path()),
-                    target: TextInputTarget::SaveResponseBody,
-                };
-            }
-        }
+        KeyCode::Char('S') if app.focus == Focus::Response => app.open_save_response(),
         _ => {}
     }
 }
@@ -717,6 +707,10 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
         handle_collection_finder_key(app, key);
         return;
     }
+    if matches!(app.popup, Popup::SaveResponse { .. }) {
+        handle_save_response_key(app, key);
+        return;
+    }
     if app.var_menu.is_some() && app.var_input().is_some() {
         feed_var_input(app, key);
         return;
@@ -757,10 +751,6 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                     }
                     TextInputTarget::BinaryFilePath => {
                         app.current.binary_file = name;
-                        return;
-                    }
-                    TextInputTarget::SaveResponseBody => {
-                        app.save_shown_response(name.trim());
                         return;
                     }
                 }
@@ -975,8 +965,78 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        Popup::CollectionFinder { .. } => unreachable!("handled above"),
+        Popup::CollectionFinder { .. } | Popup::SaveResponse { .. } => {
+            unreachable!("handled above")
+        }
     }
+}
+
+/// The save popup (`S` in the Response pane): a vim path input with Tab completion.
+/// Enter saves; if the file exists, `o` overwrites, `n` proposes a free name
+/// (`report (1).zip`) to confirm with Enter, and Esc goes back to editing.
+fn handle_save_response_key(app: &mut App, key: KeyEvent) {
+    let Popup::SaveResponse {
+        path,
+        completion,
+        conflict,
+    } = &mut app.popup
+    else {
+        return;
+    };
+    let input = path.lines.to_string();
+
+    if let Some(existing) = conflict.clone() {
+        match key.code {
+            KeyCode::Char('o') => {
+                if app.save_response_to(&input, true) == crate::app::SaveResult::Saved {
+                    app.popup = Popup::None;
+                }
+            }
+            KeyCode::Char('n') => {
+                let free = crate::save::next_free_path(&existing);
+                set_line(path, &free.display().to_string());
+                *conflict = None;
+            }
+            KeyCode::Esc => *conflict = None,
+            _ => {}
+        }
+        return;
+    }
+
+    match key.code {
+        KeyCode::Tab => {
+            let completed = completion.tab(&input);
+            set_line(path, &completed);
+        }
+        KeyCode::Enter => match app.save_response_to(&input, false) {
+            crate::app::SaveResult::Saved => app.popup = Popup::None,
+            crate::app::SaveResult::Exists(existing) => {
+                if let Popup::SaveResponse { conflict, .. } = &mut app.popup {
+                    *conflict = Some(existing);
+                }
+            }
+            crate::app::SaveResult::Failed => {}
+        },
+        KeyCode::Esc if path.mode == EditorMode::Normal => app.popup = Popup::None,
+        _ => {
+            completion.reset();
+            app.editor_events.on_key_event(key, path);
+        }
+    }
+}
+
+/// Replace a one-line input's text, keeping its mode, with the cursor at the end.
+fn set_line(state: &mut edtui::EditorState, text: &str) {
+    let mode = state.mode;
+    *state = vim_line_state(text);
+    state.mode = mode;
+    let len = text.chars().count();
+    let end = if mode == EditorMode::Insert {
+        len
+    } else {
+        len.saturating_sub(1)
+    };
+    state.cursor = edtui::Index2::new(0, end);
 }
 
 fn collection_finder_selected(app: &App) -> usize {

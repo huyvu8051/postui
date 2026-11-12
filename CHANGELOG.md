@@ -36,8 +36,16 @@ First public release candidate (0.1.0).
 - Light mode for responses over 1 MB: the Response pane shows the first 1 MB
   raw, without highlighting or undo; `o` opens the whole body in `$PAGER` and
   `S` saves it to a file (both available for any response).
+- Binary responses: bodies that aren't text are streamed to a temp file
+  instead of memory and shown as `Binary body · size · type`.
+- Saving response bodies (`S`): byte-for-byte, with Tab path completion, the
+  file name from `Content-Disposition`, the folder remembered per request, and
+  an overwrite / new name (`file (1).zip`) choice when the file exists.
 
 ### Fixed
+
+- Binary response bodies (zip, pdf, images) were decoded as text and corrupted;
+  they're now kept byte for byte.
 
 - A response that arrives after switching tabs is stored on the request that
   sent it.

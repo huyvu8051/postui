@@ -54,7 +54,7 @@ pane **and enter it**; vim buffers open in Normal mode.
 | Response | `[` / `]` | Older / newer response from this request's history |
 | Response | `x` | Run the post-response script on the response on screen |
 | Response | `o` | Open the whole body (pretty-printed JSON) in `$PAGER` (default `less`) |
-| Response | `S` | Save the body, as received, to a file (asks for the path) |
+| Response | `S` | Save the body, byte for byte, to a file (see [saving bodies](requests.md#saving-a-response-body)) |
 
 ## Vim buffers
 
@@ -146,3 +146,4 @@ in both parts.
 | Environment manager | `j`/`k`, `n` new, `Enter` activate, `v` edit variables, `d` delete, `Esc` close |
 | Environment variables | `j`/`k`, `n` new, `i`/`Enter` edit, `d` delete, `Esc` back |
 | Request history (`space H`) | `j`/`k`, `g`/`G`, `Enter` open the request, `Esc`/`q` close |
+| Save response body (`S`) | vim path input; `Tab` completes folders/files (again to cycle), `Enter` saves; if the file exists: `o` overwrite, `n` new name, `Esc` back |
