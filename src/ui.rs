@@ -650,7 +650,7 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
         Some((pos, total, _)) if total > 1 => format!(" {pos}/{total}"),
         _ => String::new(),
     };
-    let hint = if hist.is_some_and(|(_, total, _)| total > 1) { "[ ]: older/newer, " } else { "" };
+    let hint = if hist.is_some_and(|(_, total, _)| total > 1) { "[ ]: older/newer, x: run post-script, " } else { "x: run post-script, " };
     let title = if viewing_past {
         let (_, _, rec) = hist.expect("response_view implies a record");
         let what = match (&rec.response, &rec.error) {

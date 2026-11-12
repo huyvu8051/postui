@@ -92,11 +92,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
     match key.code {
         KeyCode::Char('q') => return Action::Quit,
-        KeyCode::Char('e') => {
-            app.popup = Popup::EnvManager;
-            app.env_index = 0;
-            return Action::None;
-        }
         _ => {}
     }
 
@@ -146,6 +141,7 @@ fn handle_navigate_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.next(),
         KeyCode::Char('[') if app.focus == Focus::Response => app.step_response_history(true),
         KeyCode::Char(']') if app.focus == Focus::Response => app.step_response_history(false),
+        KeyCode::Char('x') if app.focus == Focus::Response => app.run_post_script_on_shown_response(),
         _ => {}
     }
 }

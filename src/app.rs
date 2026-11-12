@@ -308,7 +308,7 @@ impl App {
             response_view: None,
             loading: false,
             status_message: String::from(
-                "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | e: environments | q: quit",
+                "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | space e: environments | q: quit",
             ),
             history: Vec::new(),
             env_index: 0,
@@ -819,6 +819,45 @@ impl App {
         self.status_message = format!("Response for '{}' arrived — switch to its tab to see it", sent.name);
     }
 
+    /// `x` in the Response pane: run the loaded request's post-response script (as it
+    /// is in the editor now, unsaved edits included) against the response on screen —
+    /// a past one when browsing history with `[` / `]`, otherwise the latest.
+    pub fn run_post_script_on_shown_response(&mut self) {
+        let shown = match self.response_view {
+            Some(i) => self
+                .response_history
+                .get(&self.current.id)
+                .and_then(|list| list.get(i))
+                .and_then(|r| r.response.clone()),
+            None => self.response.clone(),
+        };
+        let Some(resp) = shown else {
+            self.status_message = "No response on screen to run the post-response script against".into();
+            return;
+        };
+        let script = self.post_script_state.lines.to_string();
+        if script.trim().is_empty() {
+            self.status_message = "This request has no post-response script".into();
+            return;
+        }
+        let mut env = self.active_environment().cloned();
+        let outcome = crate::script::run_post_response(&script, &resp, &mut env);
+        let label = match self.response_history_position() {
+            Some((pos, total, _)) => format!("response {pos}/{total}"),
+            None => "the latest response".to_string(),
+        };
+        self.push_script_log(
+            std::iter::once(format!("— post-response script run manually on {label} ({}) —", resp.status))
+                .chain(outcome.logs)
+                .collect(),
+        );
+        self.replace_environment_matching_id(env);
+        self.status_message = match outcome.error {
+            Some(err) => format!("Post-response script failed: {err}"),
+            None => format!("Post-response script ran on {label}"),
+        };
+    }
+
     /// `[` / `]` in the Response pane: step to an older / newer past response.
     pub fn step_response_history(&mut self, older: bool) {
         let n = self.response_history.get(&self.current.id).map_or(0, Vec::len);
@@ -1010,6 +1049,36 @@ mod tests {
         app2.load_response_history(crate::storage::load_responses());
         assert_eq!(app2.response_history[&a_id].len(), RESPONSES_PER_REQUEST);
         assert!(crate::storage::load_responses().len() == RESPONSES_PER_REQUEST, "file compacted");
+    }
+
+    #[test]
+    fn manual_post_script_runs_against_the_past_response_on_screen() {
+        let _storage = isolated_storage();
+        let (mut ws, _, _) = two_request_workspace();
+        let env = Environment::new("e");
+        ws.active_environment = Some(env.id);
+        ws.environments.push(env);
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        app.post_script_state = EditorState::new(Lines::from(
+            "pm.environment:set('seen', tostring(pm.response.code))",
+        ));
+        let sent = app.current.clone();
+        app.deliver_response(&sent, Some(resp(200)), None);
+        app.deliver_response(&sent, Some(resp(201)), None);
+
+        app.step_response_history(true); // now showing the 200
+        app.run_post_script_on_shown_response();
+        let seen = |app: &App| {
+            app.active_environment()
+                .and_then(|e| e.variables.iter().find(|(k, _)| k == "seen").map(|(_, v)| v.clone()))
+        };
+        assert_eq!(seen(&app).as_deref(), Some("200"), "{}", app.status_message);
+        assert_eq!(app.response.as_ref().unwrap().status, 201, "live response untouched");
+
+        app.step_response_history(false); // back to latest
+        app.run_post_script_on_shown_response();
+        assert_eq!(seen(&app).as_deref(), Some("201"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use mlua::{Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value, Variadic};
+use mlua::{FromLuaMulti, Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Table, Value, Variadic};
 
 use crate::model::{Environment, Header, RequestItem, ResponseData};
 
@@ -11,37 +11,6 @@ const MAX_INSTRUCTIONS: u32 = 5_000_000;
 pub struct ScriptOutcome {
     pub logs: Vec<String>,
     pub error: Option<String>,
-}
-
-struct EnvHandle(Rc<RefCell<Environment>>);
-
-impl mlua::UserData for EnvHandle {
-    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method("get", |_, this, key: String| {
-            Ok(this
-                .0
-                .borrow()
-                .variables
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| v.clone()))
-        });
-        methods.add_method("has", |_, this, key: String| {
-            Ok(this.0.borrow().variables.iter().any(|(k, _)| *k == key))
-        });
-        methods.add_method("set", |_, this, (key, value): (String, String)| {
-            let mut env = this.0.borrow_mut();
-            match env.variables.iter_mut().find(|(k, _)| *k == key) {
-                Some(entry) => entry.1 = value,
-                None => env.variables.push((key, value)),
-            }
-            Ok(())
-        });
-        methods.add_method("unset", |_, this, key: String| {
-            this.0.borrow_mut().variables.retain(|(k, _)| *k != key);
-            Ok(())
-        });
-    }
 }
 
 fn new_sandboxed_lua() -> mlua::Result<Lua> {
@@ -103,8 +72,61 @@ fn install_clipboard<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Ve
     Ok(())
 }
 
-fn install_environment<'lua>(pm: &Table<'lua>, env: Rc<RefCell<Environment>>) -> mlua::Result<()> {
-    pm.set("environment", EnvHandle(env))?;
+/// Drop the implicit `self` of a `pm.environment:fn(...)` call, so the Postman-style
+/// `pm.environment.fn(...)` and the Lua method-style call both work.
+fn without_self(args: MultiValue) -> MultiValue {
+    let mut values = args.into_vec();
+    if matches!(values.first(), Some(Value::Table(_))) {
+        values.remove(0);
+    }
+    MultiValue::from_vec(values)
+}
+
+fn install_environment<'lua>(lua: &'lua Lua, pm: &Table<'lua>, env: Rc<RefCell<Environment>>) -> mlua::Result<()> {
+    let environment = lua.create_table()?;
+
+    let e = env.clone();
+    environment.set(
+        "get",
+        lua.create_function(move |lua, args: MultiValue| {
+            let key = String::from_lua_multi(without_self(args), lua)?;
+            Ok(e.borrow().variables.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()))
+        })?,
+    )?;
+
+    let e = env.clone();
+    environment.set(
+        "has",
+        lua.create_function(move |lua, args: MultiValue| {
+            let key = String::from_lua_multi(without_self(args), lua)?;
+            Ok(e.borrow().variables.iter().any(|(k, _)| *k == key))
+        })?,
+    )?;
+
+    let e = env.clone();
+    environment.set(
+        "set",
+        lua.create_function(move |lua, args: MultiValue| {
+            let (key, value) = <(String, String)>::from_lua_multi(without_self(args), lua)?;
+            let mut env = e.borrow_mut();
+            match env.variables.iter_mut().find(|(k, _)| *k == key) {
+                Some(entry) => entry.1 = value,
+                None => env.variables.push((key, value)),
+            }
+            Ok(())
+        })?,
+    )?;
+
+    environment.set(
+        "unset",
+        lua.create_function(move |lua, args: MultiValue| {
+            let key = String::from_lua_multi(without_self(args), lua)?;
+            env.borrow_mut().variables.retain(|(k, _)| *k != key);
+            Ok(())
+        })?,
+    )?;
+
+    pm.set("environment", environment)?;
     Ok(())
 }
 
@@ -194,7 +216,7 @@ pub fn run_pre_request(script: &str, req: &mut RequestItem, env: &mut Option<Env
         install_console(&lua, &pm, logs.clone())?;
         install_clipboard(&lua, &pm, logs.clone())?;
         if let Some(handle) = &env_handle {
-            install_environment(&pm, handle.clone())?;
+            install_environment(&lua, &pm, handle.clone())?;
         }
         pm.set("request", build_request_table(&lua, req)?)?;
 
@@ -226,7 +248,7 @@ pub fn run_post_response(script: &str, resp: &ResponseData, env: &mut Option<Env
         install_console(&lua, &pm, logs.clone())?;
         install_clipboard(&lua, &pm, logs.clone())?;
         if let Some(handle) = &env_handle {
-            install_environment(&pm, handle.clone())?;
+            install_environment(&lua, &pm, handle.clone())?;
         }
         install_pm_test(&lua, &pm, logs.clone())?;
         pm.set("response", build_response_table(&lua, resp)?)?;
@@ -258,5 +280,35 @@ mod tests {
         let out = run_post_response("pm.console.log(type(pm.clipboard.set))", &resp, &mut env);
         assert_eq!(out.error, None);
         assert_eq!(out.logs, vec!["function"]);
+    }
+
+    fn env() -> Option<Environment> {
+        Some(Environment::new("e"))
+    }
+
+    fn var(env: &Option<Environment>, key: &str) -> Option<String> {
+        env.as_ref()?.variables.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn environment_accepts_postman_dot_and_lua_colon_calls() {
+        let resp = ResponseData { status: 201, headers: vec![], body: String::new(), duration_ms: 0 };
+        let mut env = env();
+        let script = r#"
+            pm.environment.set("dot", "1")
+            pm.environment:set("colon", tostring(pm.response.code))
+            pm.environment.set("num", 42)
+            pm.console.log(pm.environment.get("dot"), pm.environment:get("colon"))
+            pm.console.log(tostring(pm.environment.has("dot")), tostring(pm.environment:has("nope")))
+            pm.environment.set("gone", "x")
+            pm.environment:unset("gone")
+        "#;
+        let out = run_post_response(script, &resp, &mut env);
+        assert_eq!(out.error, None);
+        assert_eq!(var(&env, "dot").as_deref(), Some("1"));
+        assert_eq!(var(&env, "colon").as_deref(), Some("201"));
+        assert_eq!(var(&env, "num").as_deref(), Some("42"));
+        assert_eq!(var(&env, "gone"), None);
+        assert_eq!(out.logs, vec!["1\t201", "true\tfalse"]);
     }
 }

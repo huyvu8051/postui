@@ -34,11 +34,11 @@ Requests, collections, and environments are persisted to
 Normal/Insert/Visual modes, not a plain text box (Body in Form Data/Binary
 mode is a list instead — see "Body Type" below — and behaves like Headers).
 While a vim buffer is focused, *every* key goes to that buffer (including
-bare letters like `q`/`e`, which are global shortcuts everywhere else —
+bare letters like `q`, which is a global shortcut everywhere else —
 `edtui`'s own Normal mode uses those for real vim motions). `Esc` in Normal mode
 leaves the buffer back to pane navigation (`hjkl`); `Ctrl+Enter`/`F5` (send)
-always work too. To quit or open the environment manager,
-navigate to Method/Headers/Path Params/Body-in-Form-Data-or-Binary first.
+always work too. To quit (`q`) or use a `space` shortcut (e.g. `space e` for
+environments), `Esc` out of the vim buffer first.
 
 The key/value popup (env variable, request header, form-field) is a 90%×90%
 panel that works like the main UI: `hjkl` selects Key/Value, `Enter`/`i`
@@ -59,7 +59,6 @@ type-and-Enter box.
 | `space w` | Save the loaded request back to its collection |
 | `space W` | Save all requests with unsaved edits |
 | `q` | Quit (Headers/Path Params/Method focus only — see Editing model) |
-| `e` | Open the environment manager (same restriction) |
 
 ### Leader shortcuts (`space` + key)
 
@@ -166,6 +165,12 @@ steps to an older response and `]` back towards the latest; the title shows
 looking at a past response. This only changes what the Response pane shows —
 none of the request's inputs change. Sending again jumps back to the latest.
 
+`x` (same place) runs the request's post-response script against the
+response on screen — the past one you're looking at, or the latest. It uses
+the script as it is in the Script pane right now (unsaved edits included);
+output goes to the Console and `pm.environment.set(...)` (or `:set`) updates the active
+environment, just like after a real send.
+
 A response always lands on the request that sent it: if you switch tabs while
 a request is in flight, the response is stored on the original request (and
 shown when you switch back), not on whatever is open when it arrives.
@@ -256,7 +261,7 @@ Only a `:` that starts a whole `/`-delimited URL segment counts, so
 | `d` | Delete selected header |
 | `space` | Toggle header enabled/disabled |
 
-### Environment manager (`e`)
+### Environment manager (`space e`)
 | Key | Action |
 |---|---|
 | `n` | New environment |
