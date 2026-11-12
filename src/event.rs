@@ -117,11 +117,6 @@ fn handle_always_global_key(app: &mut App, key: KeyEvent) -> Option<Action> {
         app.sync_current_from_editors();
         return Some(Action::Send);
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
-        app.sync_current_from_editors();
-        app.save_current();
-        return Some(Action::None);
-    }
     if key.code == KeyCode::F(3) {
         toggle_maximized(app);
         return Some(Action::None);
@@ -181,6 +176,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> bool {
             match code {
                 KeyCode::Char('f') => open_collection_finder(app),
                 KeyCode::Char('t') => toggle_tabs_sidebar(app),
+                KeyCode::Char('w') => app.save_current(),
+                KeyCode::Char('W') => app.save_all(),
+                KeyCode::Char('H') => app.popup = Popup::History { selected: 0 },
                 KeyCode::Char('z') => toggle_maximized(app),
                 KeyCode::Char('e') => {
                     app.popup = Popup::EnvManager;
@@ -858,6 +856,29 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             app.editor_events.on_key_event(key, value);
+        }
+        Popup::History { selected } => {
+            let len = app.history.len();
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => app.popup = Popup::None,
+                KeyCode::Char('j') | KeyCode::Down if len > 0 => *selected = (*selected + 1).min(len - 1),
+                KeyCode::Char('k') | KeyCode::Up => *selected = selected.saturating_sub(1),
+                KeyCode::Char('g') => *selected = 0,
+                KeyCode::Char('G') => *selected = len.saturating_sub(1),
+                KeyCode::Enter => {
+                    // Shown newest first.
+                    let entry = len.checked_sub(*selected + 1).and_then(|i| app.history.get(i));
+                    let target = entry.and_then(|e| e.request_id).and_then(|id| app.find_request(id));
+                    match target {
+                        Some((ci, ri)) => {
+                            app.popup = Popup::None;
+                            app.load_request(ci, ri);
+                        }
+                        None => app.status_message = "That request no longer exists".into(),
+                    }
+                }
+                _ => {}
+            }
         }
         Popup::CollectionFinder { .. } => unreachable!("handled above"),
     }

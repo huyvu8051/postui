@@ -1,0 +1,87 @@
+# Vendored copy of edtui 0.11.7 (MIT, https://github.com/preiter93/edtui).
+# Local patch: src/state/undo.rs exposes the undo/redo stacks (UndoSnapshot,
+# EditorState::undo_history / set_undo_history) so postui can persist them.
+
+[package]
+edition = "2021"
+name = "edtui"
+version = "0.11.7"
+authors = ["preiter <phil.reiter93@gmail.com>"]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = "A TUI based vim inspired editor"
+keywords = [
+    "ratatui",
+    "tui",
+    "editor",
+    "text",
+    "vim",
+]
+license = "MIT"
+repository = "https://github.com/preiter93/edtui"
+
+[features]
+arboard = ["dep:arboard"]
+default = [
+    "arboard",
+    "mouse-support",
+    "syntax-highlighting",
+]
+mouse-support = []
+syntax-highlighting = [
+    "dep:syntect",
+    "dep:once_cell",
+]
+system-editor = ["dep:edit"]
+
+[lib]
+name = "edtui"
+path = "src/lib.rs"
+
+[dependencies.arbitrary]
+version = "1"
+features = ["derive"]
+optional = true
+
+[dependencies.arboard]
+version = "3"
+optional = true
+
+[dependencies.crossterm]
+version = "0.29"
+package = "crossterm"
+
+[dependencies.edit]
+version = "0.1.5"
+optional = true
+
+[dependencies.enum_dispatch]
+version = "0.3"
+
+[dependencies.jagged]
+version = "0.1"
+package = "edtui-jagged"
+
+[dependencies.once_cell]
+version = "1"
+optional = true
+
+[dependencies.ratatui-core]
+version = "0.1"
+package = "ratatui-core"
+
+[dependencies.ratatui-widgets]
+version = "0.3.0"
+default-features = false
+
+[dependencies.syntect]
+version = "5"
+optional = true
+
+[dependencies.unicode-width]
+version = "0.2.0"
+

@@ -283,15 +283,22 @@ pub struct Workspace {
     pub open_tabs: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone)]
+/// One sent request, newest last. `status` is None when the request failed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub timestamp: chrono::DateTime<chrono::Local>,
+    #[serde(default)]
+    pub request_id: Option<Uuid>,
+    #[serde(default)]
+    pub name: String,
     pub method: Method,
     pub url: String,
     pub status: Option<u16>,
+    #[serde(default)]
+    pub duration_ms: Option<u128>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseData {
     pub status: u16,
     pub headers: Vec<(String, String)>,

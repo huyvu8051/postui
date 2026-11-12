@@ -36,14 +36,14 @@ mode is a list instead — see "Body Type" below — and behaves like Headers).
 While a vim buffer is focused, *every* key goes to that buffer (including
 bare letters like `q`/`e`, which are global shortcuts everywhere else —
 `edtui`'s own Normal mode uses those for real vim motions). `Esc` in Normal mode
-leaves the buffer back to pane navigation (`hjkl`); `Ctrl+Enter`/`F5` (send) and
-`Ctrl+S` (save) always work too. To quit or open the environment manager,
+leaves the buffer back to pane navigation (`hjkl`); `Ctrl+Enter`/`F5` (send)
+always work too. To quit or open the environment manager,
 navigate to Method/Headers/Path Params/Body-in-Form-Data-or-Binary first.
 
 The key/value popup (env variable, request header, form-field) is a 90%×90%
 panel that works like the main UI: `hjkl` selects Key/Value, `Enter`/`i`
 edits that field as a vim buffer (opens in Normal mode), `Esc` in Normal
-returns to selection, `Ctrl+S`/`Ctrl+Enter` saves, `Esc` (while selecting)
+returns to selection, `Ctrl+S`/`Ctrl+Enter` confirms the popup, `Esc` (while selecting)
 cancels. The single-input popups (new collection/request/environment name,
 binary file path) are vim buffers that open in Normal mode; `Enter`
 confirms, `Esc` in Normal cancels. The path-param popup stays a plain
@@ -56,7 +56,8 @@ type-and-Enter box.
 | `h` `j` `k` `l` | Move focus between panes |
 | `space z` / `F3` | Maximize the focused pane full-screen; again to restore the layout (`space z` works while selecting a pane; `F3` also works inside a vim buffer) |
 | `Ctrl+Enter` / `F5` | Send the current request |
-| `Ctrl+S` | Save the loaded request back to its collection |
+| `space w` | Save the loaded request back to its collection |
+| `space W` | Save all requests with unsaved edits |
 | `q` | Quit (Headers/Path Params/Method focus only — see Editing model) |
 | `e` | Open the environment manager (same restriction) |
 
@@ -80,6 +81,8 @@ back to pane navigation).
 | `space f` | Collection browser |
 | `space t` | Show the open-tabs sidebar and jump into it; again (while in it) to hide it |
 | `space z` | Maximize / restore the focused pane |
+| `space w` / `space W` | Save current request / save all unsaved requests |
+| `space H` | Request history |
 
 ### Open tabs sidebar (`space t`)
 Every request you open becomes a tab. The list is saved in `workspace.json`,
@@ -88,7 +91,8 @@ is hidden by default; `space t` shows it on the left and focuses it, and
 pressing it again while it's focused hides it. With it visible, `h` from
 Method/Path Params/Headers/Body also reaches it.
 
-`▶` marks the loaded request, `●` marks unsaved edits (not yet `Ctrl+S`).
+`▶` marks the loaded request, `*` marks unsaved edits (not yet saved with
+`space w`/`space W`). The collection browser shows the same `*`.
 
 | Key | Action |
 |---|---|
@@ -133,11 +137,26 @@ requests, typing fuzzy-filters requests.
 `Ctrl+R` (new request), `Ctrl+A` (new collection) and `Ctrl+D` (delete, also asks `y/n`) work
 in both modes.
 
-Switching to another request and back doesn't lose anything: unsaved edits
-and the last response/error are kept in memory per request for the rest of
-the session, restored exactly as you left them — `Ctrl+S` is only needed to
-persist those edits to disk (`workspace.json`), not to avoid losing them
-while you work. (One edge case: if a request is still in flight when you
+### Unsaved work, undo history, and request history
+Nothing is lost by switching requests or restarting: per request, postui
+keeps the unsaved edits, the last response/error, and the undo/redo history
+of its URL/Body/Script buffers (`u` / `Ctrl+R` in Normal mode). These are
+autosaved to `drafts.json` next to `workspace.json` about a second after you
+stop typing (at most ~5 s while typing continuously) and on quit; on start,
+postui restores them and reopens the most recently used open tab. Saving
+(`space w` current, `space W` all) only writes the edits into
+`workspace.json` — undo history stays. Closing a tab with `d` discards its
+draft and history. Undo depth is 100 steps per buffer (edtui's limit).
+
+Every sent request is recorded in `history.json` (last 500). `space H`
+opens it newest first — time, status (`ERR` for failures), duration, method,
+name, URL — and `Enter` opens that request.
+
+`edtui` is vendored in `vendor/edtui` with a small patch
+(`src/state/undo.rs`) that exposes the undo/redo stacks so they can be
+saved; see the note at the top of `vendor/edtui/Cargo.toml`.
+
+(One edge case: if a request is still in flight when you
 switch away, its response lands wherever `current` is when it arrives, not
 necessarily back on the request that sent it.)
 
@@ -212,7 +231,7 @@ panel between URL and Headers — separate from environments:
 - Removing it from the URL removes it from this panel.
 - `j`/`k` to move selection, `i`/`Enter` opens a small popup to edit the
   value (the name itself isn't editable — it's derived from the URL).
-- Values are per-request and saved with the request (`Ctrl+S`).
+- Values are per-request and saved with the request (`space w`).
 - A value can itself use `{{variable}}`, resolved from the active
   environment at send time — same substitution as the URL/headers/body.
 

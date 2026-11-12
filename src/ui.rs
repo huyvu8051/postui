@@ -114,6 +114,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             draw_env_var_popup(f, app.workspace.environments.as_slice(), env_index, app.env_var_index)
         }
         Popup::PathParamForm { name, value, .. } => draw_path_param_form_popup(f, name, value),
+        Popup::History { selected } => {
+            let selected = *selected;
+            draw_history_popup(f, app, selected)
+        }
         Popup::CollectionFinder { .. } => unreachable!("handled above"),
     }
 }
@@ -181,10 +185,11 @@ fn draw_collection_finder_popup(f: &mut Frame, app: &mut App) {
             SidebarEntry::Request(ci, ri) => {
                 let c = &app.workspace.collections[*ci];
                 let r = &c.requests[*ri];
+                let star = if app.is_dirty(r.id) { "*" } else { " " };
                 if recent_mode {
-                    ListItem::new(format!("{} / {} {}", c.name, r.method.as_str(), r.name))
+                    ListItem::new(format!("{star} {} / {} {}", c.name, r.method.as_str(), r.name))
                 } else {
-                    ListItem::new(format!("    {} {}", r.method.as_str(), r.name))
+                    ListItem::new(format!("  {star} {} {}", r.method.as_str(), r.name))
                 }
             }
         })
@@ -546,7 +551,7 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 (saved.method, saved.name.clone())
             };
             let marker = if Some(*id) == active { "▶" } else { " " };
-            let dirty = if app.is_dirty(*id) { "●" } else { " " };
+            let dirty = if app.is_dirty(*id) { "*" } else { " " };
             let style = if Some(*id) == active {
                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
             } else {
@@ -567,7 +572,7 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
             app.workspace.collections[ci].requests[ri].name
         ))
         .style(Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)),
-        None => Line::from(" Enter: open, d: close, space t: hide "),
+        None => Line::from(" Enter: open, d: close, J/K: move "),
     };
     let list = List::new(items)
         .block(
@@ -578,6 +583,50 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 .title_bottom(bottom),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
+    f.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_history_popup(f: &mut Frame, app: &App, selected: usize) {
+    let height = (f.area().height as u32 * 9 / 10) as u16;
+    let width = (f.area().width as u32 * 9 / 10) as u16;
+    let area = centered_rect(width, height, f.area());
+    f.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = app
+        .history
+        .iter()
+        .rev()
+        .map(|e| {
+            let (status, color) = match e.status {
+                Some(s) if s < 400 => (s.to_string(), Color::Green),
+                Some(s) => (s.to_string(), Color::Red),
+                None => ("ERR".to_string(), Color::Red),
+            };
+            let ms = e.duration_ms.map(|d| format!("{d}ms")).unwrap_or_default();
+            let gone = if e.request_id.and_then(|id| app.find_request(id)).is_none() { " (deleted)" } else { "" };
+            let line = Line::from(vec![
+                ratatui::text::Span::raw(format!("{}  ", e.timestamp.format("%m-%d %H:%M:%S"))),
+                ratatui::text::Span::styled(format!("{status:>3}"), Style::default().fg(color)),
+                ratatui::text::Span::raw(format!(" {ms:>7}  {:<7} {}{gone}  ", e.method.as_str(), e.name)),
+                ratatui::text::Span::styled(e.url.clone(), Style::default().fg(Color::DarkGray)),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
+
+    let mut state = ratatui::widgets::ListState::default();
+    if !items.is_empty() {
+        state.select(Some(selected));
+    }
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(format!(" History ({}) ", app.history.len()))
+                .title_bottom(" j/k: move, Enter: open request, Esc: close "),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(list, area, &mut state);
 }
 

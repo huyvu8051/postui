@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use edtui::{EditorEventHandler, EditorMode, EditorState, Lines};
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -6,6 +7,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use uuid::Uuid;
 
 use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, Workspace};
+use crate::session::{EditorBuffers, StoredDraft, StoredSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -148,6 +150,10 @@ pub enum Popup {
         value: EditorState,
         index: usize,
     },
+    /// Sent-request history, newest first.
+    History {
+        selected: usize,
+    },
     CollectionFinder {
         query: EditorState,
         selected: usize,
@@ -180,7 +186,15 @@ pub struct RequestDraft {
     pub item: RequestItem,
     pub response: Option<ResponseData>,
     pub last_error: Option<String>,
+    /// The request's vim buffers, kept so undo/redo survives tab switches (and restarts).
+    pub buffers: EditorBuffers,
 }
+
+const HISTORY_LIMIT: usize = 500;
+/// Autosave drafts this long after the last change…
+const SESSION_SAVE_IDLE: Duration = Duration::from_secs(1);
+/// …or at the latest this long after the first unsaved change, even while typing.
+const SESSION_SAVE_MAX_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestSource {
@@ -239,6 +253,9 @@ pub struct App {
     pub popup: Popup,
 
     pub should_quit: bool,
+
+    /// (first, last) change since drafts.json was last written.
+    pub session_changes: Option<(Instant, Instant)>,
 }
 
 impl App {
@@ -289,6 +306,7 @@ impl App {
             env_var_index: 0,
             popup: Popup::None,
             should_quit: false,
+            session_changes: None,
         }
     }
 
@@ -452,7 +470,7 @@ impl App {
         self.drafts.get(&id).map(|d| d.item.clone())
     }
 
-    /// True when the request has edits that `Ctrl+S` hasn't written back yet.
+    /// True when the request has edits that `space w` hasn't written back yet.
     pub fn is_dirty(&self, id: Uuid) -> bool {
         let Some(working) = self.working_copy(id) else {
             return false;
@@ -512,11 +530,13 @@ impl App {
 
         match self.drafts.get(&item.id).cloned() {
             Some(draft) => self.restore_draft(draft),
-            None => self.restore_saved_item(item),
+            None => {
+                self.restore_saved_item(item);
+                self.sync_editors_from_current();
+            }
         }
         self.current.sync_path_params();
         self.source = Some(RequestSource { collection_index: coll_idx, request_index: req_idx });
-        self.sync_editors_from_current();
         self.header_index = 0;
         self.form_field_index = 0;
         self.path_param_index = 0;
@@ -533,6 +553,19 @@ impl App {
         self.current = draft.item;
         self.response = draft.response;
         self.last_error = draft.last_error;
+        self.url_state = draft.buffers.url;
+        self.body_state = draft.buffers.body;
+        self.pre_script_state = draft.buffers.pre;
+        self.post_script_state = draft.buffers.post;
+    }
+
+    fn live_buffers(&self) -> EditorBuffers {
+        EditorBuffers {
+            url: self.url_state.clone(),
+            body: self.body_state.clone(),
+            pre: self.pre_script_state.clone(),
+            post: self.post_script_state.clone(),
+        }
     }
 
     fn restore_saved_item(&mut self, item: RequestItem) {
@@ -552,32 +585,57 @@ impl App {
                 item: self.current.clone(),
                 response: self.response.clone(),
                 last_error: self.last_error.clone(),
+                buffers: self.live_buffers(),
             },
         );
     }
 
+    /// Replace the stored copy of `item` (matched by id) with it. Returns false when
+    /// the request no longer exists in any collection.
+    fn write_back(&mut self, item: &RequestItem) -> bool {
+        let Some((ci, ri)) = self.find_request(item.id) else {
+            return false;
+        };
+        self.workspace.collections[ci].requests[ri] = item.clone();
+        true
+    }
+
+    /// Save every request with unsaved edits (the loaded one and all drafts).
+    pub fn save_all(&mut self) {
+        self.sync_current_from_editors();
+        let mut dirty: Vec<RequestItem> = Vec::new();
+        if self.source.is_some() && self.is_dirty(self.current.id) {
+            dirty.push(self.current.clone());
+        }
+        for (id, draft) in &self.drafts {
+            let is_current = self.source.is_some() && *id == self.current.id;
+            if !is_current && self.is_dirty(*id) {
+                dirty.push(draft.item.clone());
+            }
+        }
+        let saved = dirty.iter().filter(|item| self.write_back(item)).count();
+        if saved == 0 {
+            self.status_message = "Nothing to save".into();
+            return;
+        }
+        self.persist();
+        self.mark_session_changed();
+        if !self.status_message.starts_with("Failed to save") {
+            self.status_message = format!("Saved {saved} request(s)");
+        }
+    }
+
     pub fn save_current(&mut self) {
         self.sync_current_from_editors();
-        let name = match self.source.and_then(|source| {
-            self.workspace
-                .collections
-                .get_mut(source.collection_index)
-                .and_then(|c| c.requests.get_mut(source.request_index))
-        }) {
-            Some(r) => {
-                let id = r.id;
-                *r = self.current.clone();
-                r.id = id;
-                r.name.clone()
-            }
-            None => {
-                self.status_message =
-                    "No collection request loaded — open <space> f and press a (or Ctrl+R) to create one first"
-                        .into();
-                return;
-            }
-        };
+        let current = self.current.clone();
+        if self.source.is_none() || !self.write_back(&current) {
+            self.status_message =
+                "No collection request loaded — open <space> f and press a (or Ctrl+R) to create one first".into();
+            return;
+        }
+        let name = current.name;
         self.persist();
+        self.mark_session_changed();
         if !self.status_message.starts_with("Failed to save") {
             self.status_message = format!("Saved '{name}'");
         }
@@ -636,12 +694,162 @@ impl App {
         }
     }
 
-    pub fn push_history(&mut self, status: Option<u16>) {
+    pub fn push_history(&mut self, status: Option<u16>, duration_ms: Option<u128>) {
         self.history.push(HistoryEntry {
             timestamp: chrono::Local::now(),
+            request_id: self.source.map(|_| self.current.id),
+            name: self.current.name.clone(),
             method: self.current.method,
             url: self.current.url.clone(),
             status,
+            duration_ms,
         });
+        let excess = self.history.len().saturating_sub(HISTORY_LIMIT);
+        self.history.drain(0..excess);
+        if let Err(e) = crate::storage::save_history(&self.history) {
+            crate::logger::log("history save failed", &format!("{e:#}"));
+        }
+    }
+
+    pub fn mark_session_changed(&mut self) {
+        let now = Instant::now();
+        self.session_changes = Some(match self.session_changes {
+            Some((first, _)) => (first, now),
+            None => (now, now),
+        });
+    }
+
+    pub fn session_save_due(&self) -> bool {
+        self.session_changes.is_some_and(|(first, last)| {
+            last.elapsed() >= SESSION_SAVE_IDLE || first.elapsed() >= SESSION_SAVE_MAX_DELAY
+        })
+    }
+
+    /// Requests worth keeping across a restart: unsaved edits, a response/error, or undo history.
+    fn session_snapshot(&self) -> StoredSession {
+        let mut drafts = HashMap::new();
+        let mut keep = |id: Uuid, item: &RequestItem, resp: &Option<ResponseData>, err: &Option<String>, buffers: &EditorBuffers| {
+            let history = buffers.to_stored();
+            if self.is_dirty(id) || resp.is_some() || err.is_some() || !history.is_empty() {
+                drafts.insert(
+                    id,
+                    StoredDraft { item: item.clone(), response: resp.clone(), last_error: err.clone(), history },
+                );
+            }
+        };
+        let current_loaded = self.source.is_some();
+        for (id, d) in &self.drafts {
+            if current_loaded && *id == self.current.id {
+                continue;
+            }
+            keep(*id, &d.item, &d.response, &d.last_error, &d.buffers);
+        }
+        if current_loaded {
+            let mut item = self.current.clone();
+            item.url = self.url_state.lines.to_string();
+            item.body = self.body_state.lines.to_string();
+            item.pre_request_script = self.pre_script_state.lines.to_string();
+            item.post_response_script = self.post_script_state.lines.to_string();
+            item.sync_path_params();
+            keep(self.current.id, &item, &self.response, &self.last_error, &self.live_buffers());
+        }
+        StoredSession { drafts }
+    }
+
+    pub fn save_session(&mut self) {
+        self.session_changes = None;
+        if let Err(e) = crate::storage::save_session(&self.session_snapshot()) {
+            let detail = format!("{e:#}");
+            crate::logger::log("drafts save failed", &detail);
+            self.status_message = format!("Failed to save drafts: {detail}");
+        }
+    }
+
+    /// Load drafts from the last run and reopen the most recently used open tab.
+    pub fn restore_session(&mut self, session: StoredSession) {
+        for (id, d) in session.drafts {
+            if self.find_request(id).is_none() {
+                continue;
+            }
+            let buffers = EditorBuffers::from_stored(&d.item, &d.history);
+            self.drafts.insert(
+                id,
+                RequestDraft { item: d.item, response: d.response, last_error: d.last_error, buffers },
+            );
+        }
+        let last = self
+            .workspace
+            .recent_requests
+            .iter()
+            .find(|id| self.workspace.open_tabs.contains(id))
+            .copied();
+        if let Some((ci, ri)) = last.and_then(|id| self.find_request(id)) {
+            self.load_request(ci, ri);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Collection;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn press(app: &mut App, code: KeyCode, mods: KeyModifiers) {
+        let state = &mut app.body_state;
+        app.editor_events.on_key_event(KeyEvent::new(code, mods), state);
+    }
+
+    /// Everything that touches disk goes to a throwaway HOME, never the real workspace.
+    #[test]
+    fn unsaved_edits_and_undo_survive_tab_switch_and_restart() {
+        let home = std::env::temp_dir().join(format!("postui-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: the only test in this binary that reads HOME / touches storage.
+        unsafe { std::env::set_var("HOME", &home) };
+        assert!(dirs::data_dir().unwrap().starts_with(&home));
+
+        let mut ws = Workspace::default();
+        let mut c = Collection::new("c");
+        let mut a = RequestItem::new("a");
+        a.body = "x".into();
+        c.requests.push(a);
+        c.requests.push(RequestItem::new("b"));
+        let (a_id, b_id) = (c.requests[0].id, c.requests[1].id);
+        ws.collections.push(c);
+
+        let mut app = App::new(ws.clone());
+        app.load_request(0, 0);
+        press(&mut app, KeyCode::Char('A'), KeyModifiers::SHIFT);
+        for ch in "yz".chars() {
+            press(&mut app, KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.is_dirty(a_id));
+
+        // Switch tabs and back: edits and undo history are kept.
+        app.load_request(0, 1);
+        assert!(app.is_dirty(a_id) && !app.is_dirty(b_id));
+        assert_eq!(app.workspace.open_tabs, vec![a_id, b_id]);
+
+        // "Restart": persist, then build a fresh App from what's on disk.
+        app.save_session();
+        let mut app2 = App::new(crate::storage::load().unwrap());
+        app2.restore_session(crate::storage::load_session());
+        assert_eq!(app2.current.id, b_id, "reopens the most recent open tab");
+        assert!(app2.is_dirty(a_id));
+        app2.load_request(0, 0);
+        assert_eq!(app2.body_state.lines.to_string(), "xyz");
+        press(&mut app2, KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(app2.body_state.lines.to_string(), "x", "undo history restored");
+        press(&mut app2, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(app2.body_state.lines.to_string(), "xyz", "redo works too");
+
+        // space W writes every dirty request back.
+        app2.save_all();
+        assert!(!app2.is_dirty(a_id));
+        assert_eq!(app2.workspace.collections[0].requests[0].body, "xyz");
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

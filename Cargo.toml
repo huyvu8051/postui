@@ -20,3 +20,7 @@ serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Vendored edtui with a small patch exposing undo/redo history (see vendor/edtui/Cargo.toml).
+[patch.crates-io]
+edtui = { path = "vendor/edtui" }

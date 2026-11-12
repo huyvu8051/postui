@@ -5,6 +5,7 @@ mod http;
 mod logger;
 mod model;
 mod script;
+mod session;
 mod storage;
 mod ui;
 
@@ -35,6 +36,8 @@ enum AppEvent {
     Key(crossterm::event::KeyEvent),
     Paste(String),
     Response(Result<ResponseData, String>),
+    /// Idle heartbeat from the input thread (~10/s), used for debounced autosave.
+    Tick,
 }
 
 #[tokio::main]
@@ -42,6 +45,8 @@ async fn main() -> Result<()> {
     let workspace = storage::load()?;
     let mut app = App::new(workspace);
     app.prune_tabs();
+    app.history = storage::load_history();
+    app.restore_session(storage::load_session());
     app.refresh_response_view();
 
     enable_raw_mode()?;
@@ -66,7 +71,14 @@ async fn main() -> Result<()> {
 
     let input_tx = tx.clone();
     std::thread::spawn(move || loop {
-        if let Ok(true) = term_event::poll(Duration::from_millis(100)) {
+        let ready = term_event::poll(Duration::from_millis(100));
+        if let Ok(false) = ready {
+            if input_tx.send(AppEvent::Tick).is_err() {
+                break;
+            }
+            continue;
+        }
+        if let Ok(true) = ready {
             match term_event::read() {
                 Ok(Event::Key(key)) => {
                     if key.kind == crossterm::event::KeyEventKind::Press {
@@ -111,9 +123,21 @@ async fn run(
     terminal.draw(|f| ui::draw(f, app))?;
 
     while let Some(evt) = rx.recv().await {
+        if let AppEvent::Tick = evt {
+            if app.session_save_due() {
+                app.save_session();
+                terminal.draw(|f| ui::draw(f, app))?;
+            }
+            continue;
+        }
+        app.mark_session_changed();
         match evt {
+            AppEvent::Tick => {}
             AppEvent::Key(key) => match event::handle_key(app, key) {
-                Action::Quit => break,
+                Action::Quit => {
+                    app.save_session();
+                    break;
+                }
                 Action::Send => trigger_send(app, tx.clone()),
                 Action::None => {}
             },
@@ -122,7 +146,7 @@ async fn run(
                 app.loading = false;
                 match result {
                     Ok(resp) => {
-                        app.push_history(Some(resp.status));
+                        app.push_history(Some(resp.status), Some(resp.duration_ms));
                         app.status_message = "Request completed".into();
                         if !app.current.post_response_script.trim().is_empty() {
                             let mut env = app.active_environment().cloned();
@@ -139,7 +163,7 @@ async fn run(
                         app.last_error = None;
                     }
                     Err(e) => {
-                        app.push_history(None);
+                        app.push_history(None, None);
                         app.response = None;
                         logger::log("request failed", &e);
                         app.status_message = format!(
@@ -153,6 +177,7 @@ async fn run(
             }
         }
         if app.should_quit {
+            app.save_session();
             break;
         }
         terminal.draw(|f| ui::draw(f, app))?;
