@@ -11,7 +11,11 @@ pub fn isolated_storage() -> std::sync::MutexGuard<'static, ()> {
         let home = std::env::temp_dir().join(format!("postui-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         // SAFETY: set once, before any test reads storage paths (all go through this lock).
-        unsafe { std::env::set_var("HOME", &home) };
+        // On Linux `dirs::data_dir()` prefers XDG_DATA_HOME over HOME, so drop it too.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::remove_var("XDG_DATA_HOME");
+        }
         home
     });
     let data = dirs::data_dir().unwrap();

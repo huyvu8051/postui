@@ -45,7 +45,7 @@ impl Method {
         Method::ALL[(idx + Method::ALL.len() - 1) % Method::ALL.len()]
     }
 
-    pub fn to_reqwest(&self) -> reqwest::Method {
+    pub fn to_reqwest(self) -> reqwest::Method {
         match self {
             Method::Get => reqwest::Method::GET,
             Method::Post => reqwest::Method::POST,

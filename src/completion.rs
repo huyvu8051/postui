@@ -123,7 +123,7 @@ pub fn candidates<'a>(vars: &'a [(String, String)], prefix: &str) -> Vec<&'a (St
         .iter()
         .filter_map(|v| matcher.fuzzy_match(&v.0, prefix).map(|score| (score, v)))
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
     scored.into_iter().map(|(_, v)| v).collect()
 }
 

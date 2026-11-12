@@ -35,6 +35,8 @@ use app::App;
 use event::Action;
 use model::ResponseData;
 
+// Events are moved through a channel one at a time; the size difference doesn't matter.
+#[allow(clippy::large_enum_variant)]
 enum AppEvent {
     Key(crossterm::event::KeyEvent),
     Paste(String),
@@ -90,10 +92,10 @@ async fn main() -> Result<()> {
             if let Ok(true) = ready {
                 match term_event::read() {
                     Ok(Event::Key(key)) => {
-                        if key.kind == crossterm::event::KeyEventKind::Press {
-                            if input_tx.send(AppEvent::Key(key)).is_err() {
-                                break;
-                            }
+                        if key.kind == crossterm::event::KeyEventKind::Press
+                            && input_tx.send(AppEvent::Key(key)).is_err()
+                        {
+                            break;
                         }
                     }
                     Ok(Event::Paste(text)) => {

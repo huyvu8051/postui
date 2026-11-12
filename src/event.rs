@@ -101,9 +101,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
-    match key.code {
-        KeyCode::Char('q') => return Action::Quit,
-        _ => {}
+    if key.code == KeyCode::Char('q') {
+        return Action::Quit;
     }
 
     match app.panel_mode {

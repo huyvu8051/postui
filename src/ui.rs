@@ -462,10 +462,8 @@ fn draw_body_content(f: &mut Frame, app: &mut App, area: Rect) {
             );
             let is_json = body_looks_like_json(app);
             let mut view = EditorView::new(&mut app.body_state).theme(theme);
-            if is_json {
-                if let Ok(highlighter) = SyntaxHighlighter::new("dracula", "json") {
-                    view = view.syntax_highlighter(Some(highlighter));
-                }
+            if is_json && let Ok(highlighter) = SyntaxHighlighter::new("dracula", "json") {
+                view = view.syntax_highlighter(Some(highlighter));
             }
             f.render_widget(view, area);
         }
@@ -816,10 +814,10 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
             .title(title),
     );
     let mut view = EditorView::new(&mut app.response_state).theme(theme);
-    if app.response_is_json {
-        if let Ok(highlighter) = SyntaxHighlighter::new("dracula", "json") {
-            view = view.syntax_highlighter(Some(highlighter));
-        }
+    if app.response_is_json
+        && let Ok(highlighter) = SyntaxHighlighter::new("dracula", "json")
+    {
+        view = view.syntax_highlighter(Some(highlighter));
     }
     f.render_widget(view, area);
 }

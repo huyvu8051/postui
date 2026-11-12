@@ -129,6 +129,8 @@ pub enum HeaderFormTarget {
     FormField,
 }
 
+// Only one popup exists at a time, so the size difference between variants doesn't matter.
+#[allow(clippy::large_enum_variant)]
 pub enum Popup {
     None,
     TextInput {
@@ -412,7 +414,7 @@ impl App {
                     .map(|score| (score, SidebarEntry::Request(ci, ri)))
             })
             .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         scored.into_iter().map(|(_, entry)| entry).collect()
     }
 
@@ -889,10 +891,10 @@ impl App {
         // Overall: keep the newest N.
         let excess = kept.len().saturating_sub(RESPONSES_TOTAL);
         kept.drain(0..excess);
-        if kept.len() != loaded {
-            if let Err(e) = crate::storage::rewrite_responses(&kept) {
-                crate::logger::log("responses compact failed", &format!("{e:#}"));
-            }
+        if kept.len() != loaded
+            && let Err(e) = crate::storage::rewrite_responses(&kept)
+        {
+            crate::logger::log("responses compact failed", &format!("{e:#}"));
         }
         self.response_history.clear();
         for r in kept {
@@ -1217,7 +1219,7 @@ mod tests {
         app.deliver_response(&sent_a, Some(resp(500)), None);
         assert!(app.response.is_none(), "b's pane is untouched");
         assert_eq!(app.drafts[&a_id].response.as_ref().unwrap().status, 500);
-        assert!(app.response_history.get(&b_id).is_none());
+        assert!(!app.response_history.contains_key(&b_id));
 
         // Reload from disk with the per-request cap applied.
         for _ in 0..RESPONSES_PER_REQUEST {
