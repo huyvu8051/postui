@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use edtui::EditorMode;
+use uuid::Uuid;
 
 use crate::app::{
     single_line_state, vim_line_state, App, Direction, Focus, HeaderFormField, HeaderFormTarget, LeaderState,
@@ -182,6 +183,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> bool {
                     app.popup = Popup::EnvManager;
                     app.env_index = 0;
                 }
+                KeyCode::Char(c @ '1'..='9') => app.open_slot(c as u8 - b'0'),
                 KeyCode::Char(c) => {
                     if let Some(target) = leader_focus_target(c) {
                         jump_into(app, target);
@@ -216,6 +218,10 @@ fn toggle_tabs_sidebar(app: &mut App) {
 fn handle_tabs_key(app: &mut App, key: KeyEvent) {
     let len = app.workspace.open_tabs.len();
     let selected = app.workspace.open_tabs.get(app.tab_index).copied();
+    if std::mem::take(&mut app.tab_mark_pending) {
+        assign_slot_key(app, selected, key);
+        return;
+    }
     match key.code {
         KeyCode::Char('j') | KeyCode::Down if len > 0 => {
             app.tab_index = (app.tab_index + 1).min(len - 1);
@@ -228,6 +234,7 @@ fn handle_tabs_key(app: &mut App, key: KeyEvent) {
                 app.load_request(ci, ri);
             }
         }
+        KeyCode::Char('m') if selected.is_some() => app.tab_mark_pending = true,
         KeyCode::Char('d') | KeyCode::Char('x') => {
             if let Some(id) = selected {
                 if app.is_dirty(id) {
@@ -286,6 +293,17 @@ fn move_tab(app: &mut App, down: bool) {
     app.workspace.open_tabs.swap(i, j);
     app.tab_index = j;
     app.persist();
+}
+
+/// The key after `m` in the tabs sidebar: 1-9 assigns the selected tab to that
+/// quick slot, 0 clears its slot, anything else cancels.
+fn assign_slot_key(app: &mut App, selected: Option<Uuid>, key: KeyEvent) {
+    let Some(id) = selected else { return };
+    match key.code {
+        KeyCode::Char(c @ '1'..='9') => app.assign_slot(id, c as u8 - b'0'),
+        KeyCode::Char('0') => app.clear_slot_of(id),
+        _ => app.status_message = "Slot assignment cancelled".into(),
+    }
 }
 
 /// A pending "discard unsaved changes?" swallows the next key: y closes, anything else cancels.
@@ -503,22 +521,37 @@ fn handle_editor_pane_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
-    let state = match app.focus {
-        Focus::Url => &mut app.url_state,
-        Focus::Body => &mut app.body_state,
-        Focus::Response => &mut app.response_state,
-        Focus::ScriptEditor => match app.script_tab {
-            ScriptTab::Pre => &mut app.pre_script_state,
-            ScriptTab::Post => &mut app.post_script_state,
-        },
-        _ => unreachable!(),
-    };
-    app.editor_events.on_key_event(key, state);
+    if app.var_input().is_some() {
+        feed_var_input(app, key);
+    } else {
+        let state = match app.focus {
+            Focus::Response => &mut app.response_state,
+            Focus::ScriptEditor => match app.script_tab {
+                ScriptTab::Pre => &mut app.pre_script_state,
+                ScriptTab::Post => &mut app.post_script_state,
+            },
+            _ => unreachable!("URL and raw Body are var inputs"),
+        };
+        app.editor_events.on_key_event(key, state);
+    }
 
     if app.focus == Focus::Url {
         app.sync_current_from_editors();
     }
     Action::None
+}
+
+/// Send a key to the focused `{{variable}}`-aware input (see `App::var_input`),
+/// with completion handled by the `completion` module.
+fn feed_var_input(app: &mut App, key: KeyEvent) {
+    let vars = app.active_env_vars();
+    let mut menu = app.var_menu.take();
+    let mut events = std::mem::take(&mut app.editor_events);
+    if let Some(state) = app.var_input() {
+        crate::completion::handle_key(state, &mut menu, &vars, key, &mut events);
+    }
+    app.editor_events = events;
+    app.var_menu = menu;
 }
 
 /// Console is read-only: vim motions/search/yank work, but any edit is reverted.
@@ -629,7 +662,7 @@ fn open_path_param_form(app: &mut App, index: usize) {
     };
     app.popup = Popup::PathParamForm {
         name,
-        value: single_line_state(&value),
+        value: vim_line_state(&value),
         index,
     };
 }
@@ -637,6 +670,10 @@ fn open_path_param_form(app: &mut App, index: usize) {
 fn handle_popup_key(app: &mut App, key: KeyEvent) {
     if matches!(app.popup, Popup::CollectionFinder { .. }) {
         handle_collection_finder_key(app, key);
+        return;
+    }
+    if app.var_menu.is_some() && app.var_input().is_some() {
+        feed_var_input(app, key);
         return;
     }
 
@@ -762,7 +799,7 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                 *interacting = false;
                 return;
             }
-            app.editor_events.on_key_event(key, state);
+            feed_var_input(app, key);
         }
         Popup::EnvManager => {
             let len = app.workspace.environments.len();
@@ -840,7 +877,8 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
             }
         }
         Popup::PathParamForm { value, index, .. } => {
-            if key.code == KeyCode::Esc {
+            // Vim semantics: Esc leaves Insert first; Esc in Normal cancels.
+            if key.code == KeyCode::Esc && value.mode == EditorMode::Normal {
                 app.popup = Popup::None;
                 return;
             }
@@ -853,7 +891,7 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
-            app.editor_events.on_key_event(key, value);
+            feed_var_input(app, key);
         }
         Popup::History { selected } => {
             let len = app.history.len();
@@ -1090,4 +1128,99 @@ fn delete_collection_finder_selection(app: &mut App, entry: Option<SidebarEntry>
     app.prune_tabs();
     let selected = collection_finder_selected(app).saturating_sub(1);
     set_collection_finder_selected(app, selected);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Workspace;
+    use crate::test_support::isolated_storage;
+
+    fn app_with_env() -> App {
+        let mut ws = Workspace::default();
+        let mut env = Environment::new("dev");
+        env.variables.push(("token".into(), "abc".into()));
+        ws.active_environment = Some(env.id);
+        ws.environments.push(env);
+        App::new(ws)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        let mods = if matches!(code, KeyCode::Char(c) if c.is_ascii_uppercase()) {
+            KeyModifiers::SHIFT
+        } else {
+            KeyModifiers::NONE
+        };
+        handle_key(app, KeyEvent::new(code, mods));
+    }
+
+    fn typ(app: &mut App, text: &str) {
+        text.chars().for_each(|c| press(app, KeyCode::Char(c)));
+    }
+
+    #[test]
+    fn url_input_offers_variable_completion() {
+        let _storage = isolated_storage();
+        let mut app = app_with_env();
+        app.focus = Focus::Url;
+        app.panel_mode = PanelMode::Interact;
+        typ(&mut app, "A{{to");
+        assert!(app.var_menu.is_some());
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.url_state.lines.to_string(), "{{token}}");
+        assert_eq!(app.current.url, "{{token}}", "URL edits sync into the request");
+    }
+
+    #[test]
+    fn path_param_popup_is_a_vim_input_with_completion() {
+        let _storage = isolated_storage();
+        let mut app = app_with_env();
+        app.current.path_params = vec![("id".into(), String::new())];
+        open_path_param_form(&mut app, 0);
+        let Popup::PathParamForm { value, .. } = &app.popup else { panic!() };
+        assert_eq!(value.mode, EditorMode::Normal, "opens in Normal like the other popups");
+
+        typ(&mut app, "i{{");
+        press(&mut app, KeyCode::Enter); // picks the variable, doesn't confirm the popup
+        assert!(matches!(app.popup, Popup::PathParamForm { .. }));
+        press(&mut app, KeyCode::Enter); // now confirms
+        assert_eq!(app.current.path_params[0].1, "{{token}}");
+
+        open_path_param_form(&mut app, 0);
+        typ(&mut app, "A!");
+        press(&mut app, KeyCode::Esc); // Insert -> Normal
+        assert!(matches!(app.popup, Popup::PathParamForm { .. }));
+        press(&mut app, KeyCode::Esc); // Normal -> cancel
+        assert!(matches!(app.popup, Popup::None));
+        assert_eq!(app.current.path_params[0].1, "{{token}}", "cancel keeps the old value");
+    }
+
+    #[test]
+    fn m_then_digit_in_tabs_assigns_and_space_digit_opens() {
+        let _storage = isolated_storage(); // assigning a slot saves the workspace
+        let mut ws = Workspace::default();
+        let mut c = crate::model::Collection::new("c");
+        c.requests.push(RequestItem::new("basket"));
+        c.requests.push(RequestItem::new("upload"));
+        ws.collections.push(c);
+        let mut app = App::new(ws);
+        let (basket, upload) = (app.workspace.collections[0].requests[0].id, app.workspace.collections[0].requests[1].id);
+        app.workspace.open_tabs = vec![basket, upload];
+        app.focus = Focus::Tabs;
+        app.panel_mode = PanelMode::Interact;
+
+        app.tab_index = 1;
+        typ(&mut app, "m3");
+        app.tab_index = 0;
+        typ(&mut app, "m1");
+        assert_eq!(app.slot_of(basket), Some(1));
+        assert_eq!(app.slot_of(upload), Some(3));
+
+        typ(&mut app, "mx"); // anything but a digit cancels
+        assert_eq!(app.slot_of(basket), Some(1));
+        assert!(!app.tab_mark_pending);
+
+        typ(&mut app, "m0");
+        assert_eq!(app.slot_of(basket), None);
+    }
 }

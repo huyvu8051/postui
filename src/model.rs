@@ -281,6 +281,9 @@ pub struct Workspace {
     /// Requests open as tabs in the sidebar, in opening order.
     #[serde(default)]
     pub open_tabs: Vec<Uuid>,
+    /// Quick-open slots: digit (1-9) → request, opened with `space <digit>`.
+    #[serde(default)]
+    pub quick_slots: std::collections::BTreeMap<u8, Uuid>,
 }
 
 /// One sent request, newest last. `status` is None when the request failed.

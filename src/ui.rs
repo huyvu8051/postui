@@ -120,6 +120,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
         Popup::CollectionFinder { .. } => unreachable!("handled above"),
     }
+
+    draw_var_menu(f, app);
 }
 
 fn path_params_panel_height(app: &App) -> u16 {
@@ -557,7 +559,8 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default()
             };
-            Some(ListItem::new(format!("{marker}{dirty} {:<6} {name}", method.as_str())).style(style))
+            let slot = app.slot_of(*id).map_or(" ".to_string(), |s| s.to_string());
+            Some(ListItem::new(format!("{marker}{dirty}{slot} {:<6} {name}", method.as_str())).style(style))
         })
         .collect();
 
@@ -572,7 +575,9 @@ fn draw_tabs_sidebar(f: &mut Frame, app: &App, area: Rect) {
             app.workspace.collections[ci].requests[ri].name
         ))
         .style(Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD)),
-        None => Line::from(" Enter: open, d: close, J/K: move "),
+        None if app.tab_mark_pending => Line::from(" Assign to space 1-9, 0: clear slot ")
+            .style(Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        None => Line::from(" Enter: open, d: close, J/K: move, m<1-9>: slot "),
     };
     let list = List::new(items)
         .block(
@@ -782,9 +787,70 @@ fn draw_path_param_form_popup(f: &mut Frame, name: &str, value: &mut EditorState
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
-            .title(format!(" :{name} (Enter to confirm, Esc to cancel) ")),
+            .title(format!(
+                " :{name} [{}] (Enter: confirm, Esc: normal/cancel, {{{{: variables) ",
+                mode_label(value.mode)
+            )),
     );
     f.render_widget(EditorView::new(value).theme(theme).single_line(true), area);
+}
+
+/// The `{{variable}}` completion menu, anchored under the cursor of the input it
+/// completes. Drawn last so the cursor position is from this frame's render.
+fn draw_var_menu(f: &mut Frame, app: &mut App) {
+    if app.var_menu.is_none() {
+        return;
+    }
+    let vars = app.active_env_vars();
+    let env_name = app.active_environment().map(|e| e.name.clone());
+    let selected = app.var_menu.map_or(0, |m| m.selected);
+    let Some(state) = app.var_input() else { return };
+    let (Some(prefix), Some(cursor)) = (crate::completion::prefix_at_cursor(state), state.cursor_screen_position())
+    else {
+        return;
+    };
+    let matches = crate::completion::candidates(&vars, &prefix);
+
+    let lines: Vec<ListItem> = if env_name.is_none() {
+        vec![ListItem::new(" No active environment (space e) ").style(Style::default().fg(Color::DarkGray))]
+    } else if matches.is_empty() {
+        vec![ListItem::new(" No matching variable ").style(Style::default().fg(Color::DarkGray))]
+    } else {
+        matches
+            .iter()
+            .map(|(name, value)| {
+                let preview: String = value.chars().take(30).collect();
+                ListItem::new(Line::from(vec![
+                    ratatui::text::Span::raw(format!(" {name} ")),
+                    ratatui::text::Span::styled(preview, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect()
+    };
+
+    // Size to content, then keep it on screen: below the cursor, or above if no room.
+    let screen = f.area();
+    let widest = matches.iter().map(|(n, v)| n.chars().count() + v.chars().take(30).count() + 3).max().unwrap_or(26);
+    let width = (widest as u16 + 2).clamp(28, 60).min(screen.width);
+    let height = (lines.len() as u16).min(8) + 2;
+    let below = cursor.y + 1;
+    let y = if below + height <= screen.y + screen.height { below } else { cursor.y.saturating_sub(height) };
+    let x = cursor.x.min((screen.x + screen.width).saturating_sub(width));
+    let area = Rect { x, y, width, height: height.min(screen.height) };
+
+    let title = match &env_name {
+        Some(name) => format!(" {name} — Tab: insert, ^N/^P: move "),
+        None => " variables ".to_string(),
+    };
+    let mut list_state = ratatui::widgets::ListState::default();
+    if !matches.is_empty() {
+        list_state.select(Some(selected.min(matches.len() - 1)));
+    }
+    let list = List::new(lines)
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Magenta)).title(title))
+        .highlight_style(Style::default().bg(Color::Magenta).fg(Color::Black));
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn draw_env_manager_popup(

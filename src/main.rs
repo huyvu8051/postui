@@ -1,4 +1,5 @@
 mod app;
+mod completion;
 mod event;
 mod format;
 mod http;
@@ -7,6 +8,8 @@ mod model;
 mod script;
 mod session;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod ui;
 
 use std::io;

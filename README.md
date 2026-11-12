@@ -45,9 +45,24 @@ panel that works like the main UI: `hjkl` selects Key/Value, `Enter`/`i`
 edits that field as a vim buffer (opens in Normal mode), `Esc` in Normal
 returns to selection, `Ctrl+S`/`Ctrl+Enter` confirms the popup, `Esc` (while selecting)
 cancels. The single-input popups (new collection/request/environment name,
-binary file path) are vim buffers that open in Normal mode; `Enter`
-confirms, `Esc` in Normal cancels. The path-param popup stays a plain
-type-and-Enter box.
+binary file path, path-param value) are vim buffers that open in Normal
+mode; `Enter` confirms, `Esc` in Normal cancels.
+
+### `{{variable}}` completion
+In the inputs that get environment substitution — URL, Body (Raw), the
+header/form-field Key/Value popup, and the path-param value popup — typing
+`{{` in Insert mode auto-closes it to `{{|}}` and opens a menu of the active
+environment's variables (value preview on the right), filtered as you type.
+
+| Key (menu open) | Action |
+|---|---|
+| `Ctrl+N` / `Ctrl+P`, `↓` / `↑` | Move |
+| `Tab` / `Enter` | Insert the variable and jump past `}}` |
+| `Esc` | Close the menu (stay in Insert; `Esc` again leaves it) |
+
+`Ctrl+Space` reopens the menu while the cursor is inside `{{…}}`.
+`Backspace` inside an empty `{{|}}` deletes the whole pair. One `u` undoes
+the whole completion. The logic lives in `src/completion.rs`.
 
 ## Keybindings
 
@@ -79,6 +94,7 @@ back to pane navigation).
 | `space e` | Environment manager |
 | `space f` | Collection browser |
 | `space t` | Show the open-tabs sidebar and jump into it; again (while in it) to hide it |
+| `space 1`–`space 9` | Open the request in that quick slot (assign with `m` + digit in the tabs sidebar) |
 | `space z` | Maximize / restore the focused pane |
 | `space w` / `space W` | Save current request / save all unsaved requests |
 | `space H` | Request history |
@@ -90,6 +106,12 @@ is hidden by default; `space t` shows it on the left and focuses it, and
 pressing it again while it's focused hides it. With it visible, `h` from
 Method/Path Params/Headers/Body also reaches it.
 
+Quick slots work like vim marks: select a tab, press `m` then a digit, and
+`space <digit>` opens that request from anywhere (the sidebar can be hidden).
+The digit shows in front of the tab. A request has at most one slot and a
+slot one request — assigning a taken digit moves it. Slots are saved in
+`workspace.json` and dropped when the request is deleted.
+
 `▶` marks the loaded request, `*` marks unsaved edits (not yet saved with
 `space w`/`space W`). The collection browser shows the same `*`.
 
@@ -99,6 +121,8 @@ Method/Path Params/Headers/Body also reaches it.
 | `Enter` / `l` | Open the selected tab |
 | `d` / `x` | Close the tab (asks `y/n` first if it has unsaved edits, which are then discarded) |
 | `Shift+J` / `Shift+K` | Move the selected tab down / up |
+| `m` then `1`–`9` | Assign the selected tab to quick slot N (`space N` opens it) |
+| `m` then `0` | Clear the selected tab's quick slot |
 
 `Shift+H` / `Shift+L` switch to the previous / next tab from anywhere outside
 a vim buffer — the sidebar doesn't need to be visible. It wraps around at the

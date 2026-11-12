@@ -6,7 +6,8 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use uuid::Uuid;
 
-use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, ResponseRecord, Workspace};
+use crate::model::{BodyMode, Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, ResponseRecord, Workspace};
+use crate::completion::VarMenu;
 use crate::session::{EditorBuffers, StoredDraft, StoredSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +224,8 @@ pub struct App {
     pub tab_index: usize,
     /// Tab awaiting a y/n "discard unsaved changes" confirmation.
     pub tab_confirm_close: Option<Uuid>,
+    /// `m` pressed in the tabs sidebar; the next digit assigns a quick slot.
+    pub tab_mark_pending: bool,
     pub panel_mode: PanelMode,
     pub maximized: bool,
     pub editor_events: EditorEventHandler,
@@ -263,6 +266,9 @@ pub struct App {
 
     /// (first, last) change since drafts.json was last written.
     pub session_changes: Option<(Instant, Instant)>,
+
+    /// `{{variable}}` completion menu, when open (see `completion`).
+    pub var_menu: Option<VarMenu>,
 }
 
 impl App {
@@ -287,6 +293,7 @@ impl App {
             focus_before_tabs: Focus::Method,
             tab_index: 0,
             tab_confirm_close: None,
+            tab_mark_pending: false,
             panel_mode: PanelMode::default(),
             maximized: false,
             editor_events: EditorEventHandler::default(),
@@ -316,6 +323,7 @@ impl App {
             popup: Popup::None,
             should_quit: false,
             session_changes: None,
+            var_menu: None,
         }
     }
 
@@ -396,6 +404,29 @@ impl App {
         scored.into_iter().map(|(_, entry)| entry).collect()
     }
 
+    /// The focused vim input whose text gets `{{variable}}` substitution, if any —
+    /// the inputs that offer variable completion.
+    pub fn var_input(&mut self) -> Option<&mut EditorState> {
+        match &mut self.popup {
+            Popup::HeaderForm { key, value, field, interacting: true, .. } => Some(match field {
+                HeaderFormField::Key => key,
+                HeaderFormField::Value => value,
+            }),
+            Popup::PathParamForm { value, .. } => Some(value),
+            Popup::None if self.panel_mode == PanelMode::Interact => match self.focus {
+                Focus::Url => Some(&mut self.url_state),
+                Focus::Body if self.current.body_mode == BodyMode::Raw => Some(&mut self.body_state),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// (name, value) pairs of the active environment; empty without one.
+    pub fn active_env_vars(&self) -> Vec<(String, String)> {
+        self.active_environment().map(|e| e.variables.clone()).unwrap_or_default()
+    }
+
     pub fn active_environment(&self) -> Option<&Environment> {
         self.workspace
             .active_environment
@@ -461,7 +492,49 @@ impl App {
             .flat_map(|c| c.requests.iter().map(|r| r.id))
             .collect();
         self.workspace.open_tabs.retain(|id| alive.contains(id));
+        self.workspace.quick_slots.retain(|_, id| alive.contains(id));
         self.tab_index = self.tab_index.min(self.workspace.open_tabs.len().saturating_sub(1));
+    }
+
+    /// The quick slot (1-9) a request is assigned to, if any.
+    pub fn slot_of(&self, id: Uuid) -> Option<u8> {
+        self.workspace.quick_slots.iter().find(|(_, v)| **v == id).map(|(k, _)| *k)
+    }
+
+    /// Put a request in a quick slot. A request holds at most one slot, and a slot
+    /// one request: the request's old slot is freed, and the slot's old holder loses it.
+    pub fn assign_slot(&mut self, id: Uuid, slot: u8) {
+        let name = |app: &App, id: Uuid| {
+            app.find_request(id).map(|(ci, ri)| app.workspace.collections[ci].requests[ri].name.clone())
+        };
+        self.workspace.quick_slots.retain(|_, v| *v != id);
+        let replaced = self.workspace.quick_slots.insert(slot, id).and_then(|old| name(self, old));
+        self.persist();
+        let this = name(self, id).unwrap_or_default();
+        self.status_message = match replaced {
+            Some(old) => format!("space {slot} → '{this}' (was '{old}')"),
+            None => format!("space {slot} → '{this}'"),
+        };
+    }
+
+    pub fn clear_slot_of(&mut self, id: Uuid) {
+        if let Some(slot) = self.slot_of(id) {
+            self.workspace.quick_slots.remove(&slot);
+            self.persist();
+            self.status_message = format!("space {slot} cleared");
+        }
+    }
+
+    /// `space <digit>`: open the request in that slot.
+    pub fn open_slot(&mut self, slot: u8) {
+        let target = self.workspace.quick_slots.get(&slot).and_then(|id| self.find_request(*id));
+        match target {
+            Some((ci, ri)) => self.load_request(ci, ri),
+            None => {
+                self.status_message =
+                    format!("space {slot} is empty — in the tabs sidebar (space t), select a tab and press m {slot}")
+            }
+        }
     }
 
     /// Current in-memory version of a request: the live editors for the loaded one,
@@ -979,24 +1052,7 @@ mod tests {
         app.editor_events.on_key_event(KeyEvent::new(code, mods), state);
     }
 
-    /// Everything that touches disk goes to a throwaway HOME, never the real workspace.
-    /// Tests holding the returned guard run one at a time and start with empty storage.
-    fn isolated_storage() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let home = HOME.get_or_init(|| {
-            let home = std::env::temp_dir().join(format!("postui-test-{}", Uuid::new_v4()));
-            std::fs::create_dir_all(&home).unwrap();
-            // SAFETY: set once, before any test reads storage paths (all go through this lock).
-            unsafe { std::env::set_var("HOME", &home) };
-            home
-        });
-        let data = dirs::data_dir().unwrap();
-        assert!(data.starts_with(home), "storage must point at the temp HOME");
-        let _ = std::fs::remove_dir_all(data.join("postui"));
-        guard
-    }
+    use crate::test_support::isolated_storage;
 
     fn two_request_workspace() -> (Workspace, Uuid, Uuid) {
         let mut ws = Workspace::default();
@@ -1079,6 +1135,44 @@ mod tests {
         app.step_response_history(false); // back to latest
         app.run_post_script_on_shown_response();
         assert_eq!(seen(&app).as_deref(), Some("201"));
+    }
+
+    #[test]
+    fn quick_slots_assign_open_and_survive_restart() {
+        let _storage = isolated_storage();
+        let (ws, a_id, b_id) = two_request_workspace();
+        let mut app = App::new(ws);
+
+        app.assign_slot(a_id, 1);
+        app.assign_slot(b_id, 3);
+        assert_eq!((app.slot_of(a_id), app.slot_of(b_id)), (Some(1), Some(3)));
+
+        // A request holds one slot: moving `a` to 2 frees 1.
+        app.assign_slot(a_id, 2);
+        assert_eq!(app.slot_of(a_id), Some(2));
+        assert!(!app.workspace.quick_slots.contains_key(&1));
+        // A slot holds one request: taking 3 for `a` removes `b`.
+        app.assign_slot(a_id, 3);
+        assert_eq!((app.slot_of(a_id), app.slot_of(b_id)), (Some(3), None));
+        assert!(app.status_message.contains("was 'b'"), "{}", app.status_message);
+
+        app.open_slot(3);
+        assert_eq!(app.current.id, a_id);
+        app.open_slot(7);
+        assert!(app.status_message.contains("empty"));
+
+        // Saved with the workspace.
+        let reloaded = crate::storage::load().unwrap();
+        assert_eq!(reloaded.quick_slots.get(&3), Some(&a_id));
+
+        app.clear_slot_of(a_id);
+        assert_eq!(app.slot_of(a_id), None);
+
+        // Slots of deleted requests are dropped.
+        app.assign_slot(b_id, 5);
+        app.workspace.collections[0].requests.retain(|r| r.id != b_id);
+        app.prune_tabs();
+        assert!(app.workspace.quick_slots.is_empty());
     }
 
     #[test]
