@@ -155,7 +155,6 @@ async fn run(
             },
             AppEvent::Paste(text) => event::handle_paste(app, text),
             AppEvent::Response { sent, result } => {
-                app.loading = false;
                 let (response, error) = match result {
                     Ok(resp) => (Some(resp), None),
                     Err(e) => (None, Some(e)),
@@ -228,8 +227,8 @@ fn trigger_send(app: &mut App, tx: mpsc::UnboundedSender<AppEvent>) {
         }
     }
 
-    app.loading = true;
-    app.status_message = "Sending request...".into();
+    app.begin_send(sent.id);
+    app.status_message = format!("Sending '{}'...", sent.name);
     tokio::spawn(async move {
         let result = http::send_request(&req, env.as_ref())
             .await

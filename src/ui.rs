@@ -780,7 +780,7 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
             " Response{counter} · {} · {what}{cut} — PAST RESPONSE — {hint}hjkl gg/G /search v y ",
             rec.timestamp.format("%m-%d %H:%M:%S")
         )
-    } else if app.loading {
+    } else if app.is_sending() {
         " Response (sending...) ".to_string()
     } else if app.last_error.is_some() {
         format!(" Response{counter} — request failed — {hint}")

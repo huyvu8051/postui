@@ -38,3 +38,5 @@ First public release candidate (0.1.0).
 
 - A response that arrives after switching tabs is stored on the request that
   sent it.
+- "Sending..." in the Response pane shows only on the request being sent, not
+  on every request you open while it's in flight.

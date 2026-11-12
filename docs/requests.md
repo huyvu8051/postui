@@ -66,8 +66,11 @@ set -as terminal-features 'xterm*:extkeys'
 
 then restart the tmux server.
 
-If you switch to another tab while a request is in flight, its response is
-stored on the request that sent it, not on the one on screen.
+Requests are sent in the background, so you can keep working while one is in
+flight, including switching to other requests. Only the request that is
+sending shows `Response (sending...)`; when its response arrives it is stored
+on that request (the status line tells you if it isn't the one on screen),
+never on whatever is open at the time.
 
 ## Response
 

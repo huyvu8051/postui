@@ -258,7 +258,8 @@ pub struct App {
     /// Which past response the Response pane shows; None = the latest.
     pub response_view: Option<usize>,
 
-    pub loading: bool,
+    /// Requests with a send in flight (count, in case one is sent twice).
+    pub in_flight: HashMap<Uuid, usize>,
     pub status_message: String,
     pub history: Vec<HistoryEntry>,
 
@@ -318,7 +319,7 @@ impl App {
             response_is_json: false,
             response_history: HashMap::new(),
             response_view: None,
-            loading: false,
+            in_flight: HashMap::new(),
             status_message: String::from(
                 "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | space e: environments | q: quit",
             ),
@@ -940,6 +941,24 @@ impl App {
         list.drain(0..excess);
     }
 
+    pub fn begin_send(&mut self, id: Uuid) {
+        *self.in_flight.entry(id).or_default() += 1;
+    }
+
+    fn end_send(&mut self, id: Uuid) {
+        if let Some(n) = self.in_flight.get_mut(&id) {
+            *n -= 1;
+            if *n == 0 {
+                self.in_flight.remove(&id);
+            }
+        }
+    }
+
+    /// True while the request on screen has a send in flight.
+    pub fn is_sending(&self) -> bool {
+        self.in_flight.contains_key(&self.current.id)
+    }
+
     /// A finished send. It lands on the request that was sent — which may no longer
     /// be the one on screen if the user switched tabs while it was in flight.
     pub fn deliver_response(
@@ -948,6 +967,7 @@ impl App {
         response: Option<ResponseData>,
         error: Option<String>,
     ) {
+        self.end_send(sent.id);
         self.record_response(sent.id, response.as_ref(), error.as_deref());
         if self.current.id == sent.id {
             self.response = response;
@@ -1314,6 +1334,34 @@ mod tests {
             .retain(|r| r.id != b_id);
         app.prune_tabs();
         assert!(app.workspace.quick_slots.is_empty());
+    }
+
+    #[test]
+    fn sending_state_belongs_to_the_request_that_was_sent() {
+        let _storage = isolated_storage();
+        let (ws, _, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        let sent_a = app.current.clone();
+        app.begin_send(sent_a.id);
+        assert!(app.is_sending());
+
+        app.load_request(0, 1);
+        assert!(
+            !app.is_sending(),
+            "b shows no 'sending...' while a is in flight"
+        );
+
+        app.load_request(0, 0);
+        assert!(app.is_sending(), "back on a, it's still sending");
+
+        // Sent twice: still sending until both responses are in.
+        app.begin_send(sent_a.id);
+        app.deliver_response(&sent_a, Some(resp(200)), None);
+        assert!(app.is_sending());
+        app.deliver_response(&sent_a, Some(resp(201)), None);
+        assert!(!app.is_sending());
+        assert!(app.in_flight.is_empty());
     }
 
     #[test]
