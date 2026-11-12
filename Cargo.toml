@@ -2,6 +2,17 @@
 name = "postui"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+authors = ["Huy Vu (huyvu8051)"]
+description = "A keyboard-driven, vim-style terminal HTTP client: a lightweight Postman alternative"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/huyvu8051/postui"
+readme = "README.md"
+keywords = ["http", "api", "tui", "postman", "vim"]
+categories = ["command-line-utilities", "development-tools"]
+# Builds against a patched edtui (vendor/edtui via [patch.crates-io]); patches don't
+# apply to crates.io packages, so install from git instead of publishing.
+publish = false
 
 [dependencies]
 anyhow = "1.0.104"

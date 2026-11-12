@@ -1,0 +1,49 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact keys pressed help a lot (e.g. `space u`, `i`, type `{{`, `Tab`).
+      placeholder: |
+        1. space f, Esc, select "users / list"
+        2. F5
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: postui version / commit
+      description: Output of `git rev-parse --short HEAD`, or how you installed it.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15.1, Ubuntu 24.04, ...
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal (and multiplexer)
+      placeholder: iTerm2 3.5 inside tmux 3.5, kitty 0.38, ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Relevant lines from `postui.log` in the data directory, if any. Remove tokens and other secrets.
+      render: text
