@@ -261,11 +261,19 @@ fn draw_request_top(f: &mut Frame, app: &mut App, area: Rect) {
         );
     f.render_widget(method, cols[0]);
 
+    // Single-line, so edtui's status line has no room: show the mode in the title
+    // while the URL is being edited, like the single-line popups do.
+    let editing = app.focus == Focus::Url && app.panel_mode == PanelMode::Interact;
+    let title = if editing {
+        format!(" URL [{}] — {{{{: variables, :param for path params ", mode_label(app.url_state.mode))
+    } else {
+        " URL (vim keys — i insert, hjkl move; {{var}} for env vars, :param below) ".to_string()
+    };
     let theme = editor_theme(
         Block::default()
             .borders(Borders::ALL)
             .border_style(border_style(app, Focus::Url))
-            .title(" URL (vim keys — i insert, hjkl move; {{var}} for env vars, :param below) "),
+            .title(title),
     );
     f.render_widget(
         EditorView::new(&mut app.url_state).theme(theme).single_line(true),
