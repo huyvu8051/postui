@@ -47,6 +47,8 @@ enum AppEvent {
     },
     /// Idle heartbeat from the input thread (~10/s), used for debounced autosave.
     Tick,
+    /// The terminal was resized; redraw at the new size.
+    Resize,
 }
 
 #[tokio::main]
@@ -55,7 +57,7 @@ async fn main() -> Result<()> {
     let mut app = App::new(workspace);
     app.prune_tabs();
     app.history = storage::load_history();
-    app.load_response_history(storage::load_responses());
+    app.load_response_history(storage::read_response_lines());
     app.restore_session(storage::load_session());
     app.refresh_response_view();
 
@@ -82,29 +84,22 @@ async fn main() -> Result<()> {
     let input_tx = tx.clone();
     std::thread::spawn(move || {
         loop {
-            let ready = term_event::poll(Duration::from_millis(100));
-            if let Ok(false) = ready {
-                if input_tx.send(AppEvent::Tick).is_err() {
-                    break;
-                }
-                continue;
-            }
-            if let Ok(true) = ready {
-                match term_event::read() {
-                    Ok(Event::Key(key)) => {
-                        if key.kind == crossterm::event::KeyEventKind::Press
-                            && input_tx.send(AppEvent::Key(key)).is_err()
-                        {
-                            break;
-                        }
+            let app_event = match term_event::poll(Duration::from_millis(100)) {
+                Ok(false) => Some(AppEvent::Tick),
+                Ok(true) => match term_event::read() {
+                    Ok(Event::Key(key)) if key.kind == crossterm::event::KeyEventKind::Press => {
+                        Some(AppEvent::Key(key))
                     }
-                    Ok(Event::Paste(text)) => {
-                        if input_tx.send(AppEvent::Paste(text)).is_err() {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
+                    Ok(Event::Paste(text)) => Some(AppEvent::Paste(text)),
+                    Ok(Event::Resize(_, _)) => Some(AppEvent::Resize),
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+            if let Some(app_event) = app_event
+                && input_tx.send(app_event).is_err()
+            {
+                break; // the app has quit
             }
         }
     });
@@ -142,9 +137,14 @@ async fn run(
             }
             continue;
         }
+        if let AppEvent::Resize = evt {
+            // draw() picks up the new size and repaints everything.
+            terminal.draw(|f| ui::draw(f, app))?;
+            continue;
+        }
         app.mark_session_changed();
         match evt {
-            AppEvent::Tick => {}
+            AppEvent::Tick | AppEvent::Resize => {}
             AppEvent::Key(key) => match event::handle_key(app, key) {
                 Action::Quit => {
                     app.save_session();

@@ -316,6 +316,19 @@ pub struct ResponseRecord {
     pub truncated: bool,
 }
 
+/// What the app keeps in memory about a past response. The body stays on disk in
+/// responses.jsonl and is read (via `offset`) only when it's viewed.
+#[derive(Debug, Clone)]
+pub struct ResponseMeta {
+    pub timestamp: chrono::DateTime<chrono::Local>,
+    /// None when the request failed.
+    pub status: Option<u16>,
+    pub duration_ms: Option<u128>,
+    pub truncated: bool,
+    /// Byte offset of the record's line in responses.jsonl.
+    pub offset: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseData {
     pub status: u16,

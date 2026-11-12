@@ -1,6 +1,8 @@
 # Vendored copy of edtui 0.11.7 (MIT, https://github.com/preiter93/edtui).
-# Local patch: src/state/undo.rs exposes the undo/redo stacks (UndoSnapshot,
-# EditorState::undo_history / set_undo_history) so postui can persist them.
+# Local patches, all in src/state/undo.rs:
+# - expose the undo/redo stacks (UndoSnapshot, EditorState::undo_history /
+#   set_undo_history) so postui can persist them;
+# - bound each stack by total characters (MAX_STACK_CHARS) as well as entries.
 
 [package]
 edition = "2021"

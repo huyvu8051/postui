@@ -5,10 +5,17 @@
 //! In the long run, this should be replaced with an action-based mechanism.
 use crate::{EditorState, Index2, Lines};
 
+/// Upper bound on the characters held by one undo (or redo) stack. Every entry is a
+/// full copy of the text, so without it a large buffer could keep 100 copies of
+/// itself. (postui patch — upstream bounds the stack by entry count only.)
+const MAX_STACK_CHARS: usize = 2_000_000;
+
 #[derive(Debug, Clone)]
 pub(crate) struct Stack {
     inner: Vec<UndoState>,
     max_size: usize,
+    /// Total characters across `inner`, kept in sync on push/pop/remove.
+    chars: usize,
 }
 
 impl Stack {
@@ -16,16 +23,22 @@ impl Stack {
         Self {
             inner: Vec::new(),
             max_size: 100,
+            chars: 0,
         }
     }
 
     pub(crate) fn pop(&mut self) -> Option<UndoState> {
-        self.inner.pop()
+        let value = self.inner.pop()?;
+        self.chars -= value.chars();
+        Some(value)
     }
 
+    /// Push an entry, dropping the oldest ones while the stack is over its entry
+    /// or character budget (the newest entry is always kept).
     pub(crate) fn push(&mut self, value: UndoState) {
+        self.chars += value.chars();
         self.inner.push(value);
-        if self.len() > self.max_size {
+        while self.len() > 1 && (self.len() > self.max_size || self.chars > MAX_STACK_CHARS) {
             self.remove(0);
         }
     }
@@ -35,7 +48,8 @@ impl Stack {
     }
 
     fn remove(&mut self, index: usize) {
-        self.inner.remove(index);
+        let removed = self.inner.remove(index);
+        self.chars -= removed.chars();
     }
 }
 
@@ -55,6 +69,12 @@ pub struct UndoSnapshot {
 }
 
 impl UndoState {
+    fn chars(&self) -> usize {
+        (0..self.lines.len())
+            .map(|row| self.lines.len_col(row).unwrap_or(0))
+            .sum()
+    }
+
     fn to_snapshot(&self) -> UndoSnapshot {
         UndoSnapshot {
             text: self.lines.to_string(),

@@ -59,6 +59,5 @@ Editing a request doesn't change the saved copy until you save:
 
 Requests with unsaved edits show `*` in the tabs sidebar and the collection
 browser. Unsaved edits are not at risk in the meantime: postui keeps a draft
-per request, with its undo history and last response, and autosaves the
-drafts to disk (see [data and storage](data-and-storage.md)). Switching tabs
+per request, with its undo history, and autosaves the drafts to disk (see [data and storage](data-and-storage.md)). Switching tabs
 or quitting keeps them; only closing a tab (with confirmation) discards them.

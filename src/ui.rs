@@ -767,8 +767,8 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let title = if viewing_past {
         let (_, _, rec) = hist.expect("response_view implies a record");
-        let what = match (&rec.response, &rec.error) {
-            (Some(r), _) => format!("{} ({} ms)", r.status, r.duration_ms),
+        let what = match (rec.status, rec.duration_ms) {
+            (Some(status), Some(ms)) => format!("{status} ({ms} ms)"),
             _ => "request failed".to_string(),
         };
         let cut = if rec.truncated {
@@ -795,7 +795,7 @@ fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let failed = if viewing_past {
-        hist.is_some_and(|(_, _, rec)| rec.response.is_none())
+        hist.is_some_and(|(_, _, rec)| rec.status.is_none())
     } else {
         app.last_error.is_some()
     };

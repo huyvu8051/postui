@@ -9,9 +9,9 @@ use uuid::Uuid;
 use crate::completion::VarMenu;
 use crate::model::{
     BodyMode, Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData,
-    ResponseRecord, Workspace,
+    ResponseMeta, ResponseRecord, Workspace,
 };
-use crate::session::{EditorBuffers, StoredDraft, StoredSession};
+use crate::session::{EditorBuffers, StoredBuffers, StoredDraft, StoredSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -253,10 +253,12 @@ pub struct App {
 
     pub response_state: EditorState,
     pub response_is_json: bool,
-    /// Past responses per request, oldest first.
-    pub response_history: HashMap<Uuid, Vec<ResponseRecord>>,
+    /// Past responses per request, oldest first. Summaries only; bodies stay on disk.
+    pub response_history: HashMap<Uuid, Vec<ResponseMeta>>,
     /// Which past response the Response pane shows; None = the latest.
     pub response_view: Option<usize>,
+    /// The past response being viewed, read from disk when stepping with `[` / `]`.
+    pub viewed_response: Option<ResponseRecord>,
 
     /// Requests with a send in flight (count, in case one is sent twice).
     pub in_flight: HashMap<Uuid, usize>,
@@ -275,6 +277,9 @@ pub struct App {
 
     /// `{{variable}}` completion menu, when open (see `completion`).
     pub var_menu: Option<VarMenu>,
+
+    /// Hash of the drafts.json content last written, to skip unchanged autosaves.
+    last_session_hash: Option<u64>,
 }
 
 impl App {
@@ -319,6 +324,7 @@ impl App {
             response_is_json: false,
             response_history: HashMap::new(),
             response_view: None,
+            viewed_response: None,
             in_flight: HashMap::new(),
             status_message: String::from(
                 "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | space e: environments | q: quit",
@@ -330,6 +336,7 @@ impl App {
             should_quit: false,
             session_changes: None,
             var_menu: None,
+            last_session_hash: None,
         }
     }
 
@@ -670,7 +677,9 @@ impl App {
             return;
         };
 
-        match self.drafts.get(&item.id).cloned() {
+        // Move the draft out rather than cloning it (it can hold a large response and
+        // undo history); it's stashed again when this request is left.
+        match self.drafts.remove(&item.id) {
             Some(draft) => self.restore_draft(draft),
             None => {
                 self.restore_saved_item(item);
@@ -683,6 +692,10 @@ impl App {
             request_index: req_idx,
         });
         self.response_view = None;
+        self.viewed_response = None;
+        if self.response.is_none() && self.last_error.is_none() {
+            self.load_latest_response_from_history();
+        }
         self.header_index = 0;
         self.form_field_index = 0;
         self.path_param_index = 0;
@@ -796,15 +809,11 @@ impl App {
     }
 
     pub fn refresh_response_view(&mut self) {
-        let past = self
-            .response_view
-            .and_then(|i| self.response_history.get(&self.current.id)?.get(i))
-            .map(|r| (r.response.clone(), r.error.clone()));
-        let (response, last_error) = match past {
-            Some(p) => p,
-            None => (self.response.clone(), self.last_error.clone()),
+        let (response, last_error) = match (&self.response_view, &self.viewed_response) {
+            (Some(_), Some(past)) => (&past.response, &past.error),
+            _ => (&self.response, &self.last_error),
         };
-        let text = match (&response, &last_error) {
+        let text = match (response, last_error) {
             (Some(resp), _) => {
                 let mut out = String::new();
                 for (k, v) in &resp.headers {
@@ -870,39 +879,53 @@ impl App {
         }
     }
 
-    /// Load responses.jsonl, dropping records of deleted requests and anything past
-    /// the per-request / total limits (the file is rewritten only if something was dropped).
-    pub fn load_response_history(&mut self, records: Vec<ResponseRecord>) {
-        let loaded = records.len();
-        let mut kept: Vec<ResponseRecord> = records
-            .into_iter()
-            .filter(|r| self.find_request(r.request_id).is_some())
+    /// Index responses.jsonl (summaries only; bodies stay on disk), dropping records
+    /// of deleted requests, unreadable lines, and anything past the per-request / total
+    /// limits. The file is rewritten only when something was dropped.
+    pub fn load_response_history(&mut self, lines: Vec<String>) {
+        let parsed: Vec<_> = lines
+            .iter()
+            .map(|l| crate::storage::summarize_response_line(l))
             .collect();
-        // Per request: keep the newest N.
-        let mut per: HashMap<Uuid, usize> = HashMap::new();
-        for r in kept.iter().rev() {
-            *per.entry(r.request_id).or_default() += 1;
+        // Keep the newest N per request and overall, walking from the end.
+        let mut per_request: HashMap<Uuid, usize> = HashMap::new();
+        let mut keep = vec![false; lines.len()];
+        let mut total = 0;
+        for (i, entry) in parsed.iter().enumerate().rev() {
+            let Some((id, _)) = entry else { continue };
+            if total == RESPONSES_TOTAL || self.find_request(*id).is_none() {
+                continue;
+            }
+            let n = per_request.entry(*id).or_default();
+            if *n < RESPONSES_PER_REQUEST {
+                *n += 1;
+                total += 1;
+                keep[i] = true;
+            }
         }
-        let mut seen: HashMap<Uuid, usize> = HashMap::new();
-        kept.retain(|r| {
-            let n = seen.entry(r.request_id).or_default();
-            *n += 1;
-            per[&r.request_id] - *n < RESPONSES_PER_REQUEST
-        });
-        // Overall: keep the newest N.
-        let excess = kept.len().saturating_sub(RESPONSES_TOTAL);
-        kept.drain(0..excess);
-        if kept.len() != loaded
-            && let Err(e) = crate::storage::rewrite_responses(&kept)
-        {
-            crate::logger::log("responses compact failed", &format!("{e:#}"));
+        if keep.iter().any(|k| !k) {
+            let kept: Vec<&str> = lines
+                .iter()
+                .zip(&keep)
+                .filter(|(_, k)| **k)
+                .map(|(l, _)| l.as_str())
+                .collect();
+            if let Err(e) = crate::storage::rewrite_response_lines(&kept) {
+                crate::logger::log("responses compact failed", &format!("{e:#}"));
+            }
         }
+        // Offsets of the kept lines in the (possibly rewritten) file.
         self.response_history.clear();
-        for r in kept {
-            self.response_history
-                .entry(r.request_id)
-                .or_default()
-                .push(r);
+        let mut offset = 0u64;
+        for ((line, entry), kept) in lines.iter().zip(parsed).zip(keep) {
+            if !kept {
+                continue;
+            }
+            if let Some((id, mut meta)) = entry {
+                meta.offset = offset;
+                self.response_history.entry(id).or_default().push(meta);
+            }
+            offset += line.len() as u64 + 1;
         }
     }
 
@@ -932,13 +955,42 @@ impl App {
             error: error.map(str::to_string),
             truncated,
         };
-        if let Err(e) = crate::storage::append_response(&record) {
-            crate::logger::log("response history save failed", &format!("{e:#}"));
-        }
+        let offset = match crate::storage::append_response(&record) {
+            Ok(offset) => offset,
+            Err(e) => {
+                crate::logger::log("response history save failed", &format!("{e:#}"));
+                return;
+            }
+        };
         let list = self.response_history.entry(request_id).or_default();
-        list.push(record);
+        list.push(ResponseMeta {
+            timestamp: record.timestamp,
+            status: record.response.as_ref().map(|r| r.status),
+            duration_ms: record.response.as_ref().map(|r| r.duration_ms),
+            truncated,
+            offset,
+        });
         let excess = list.len().saturating_sub(RESPONSES_PER_REQUEST);
         list.drain(0..excess);
+    }
+
+    /// Show the newest stored response of the loaded request (e.g. after a restart,
+    /// when nothing is in memory yet).
+    fn load_latest_response_from_history(&mut self) {
+        let Some(meta) = self
+            .response_history
+            .get(&self.current.id)
+            .and_then(|l| l.last())
+        else {
+            return;
+        };
+        match crate::storage::read_response_at(meta.offset) {
+            Ok(record) => {
+                self.response = record.response;
+                self.last_error = record.error;
+            }
+            Err(e) => crate::logger::log("response history read failed", &format!("{e:#}")),
+        }
     }
 
     pub fn begin_send(&mut self, id: Uuid) {
@@ -973,6 +1025,7 @@ impl App {
             self.response = response;
             self.last_error = error;
             self.response_view = None;
+            self.viewed_response = None;
             self.refresh_response_view();
             return;
         }
@@ -1008,10 +1061,9 @@ impl App {
     /// a past one when browsing history with `[` / `]`, otherwise the latest.
     pub fn run_post_script_on_shown_response(&mut self) {
         let shown = match self.response_view {
-            Some(i) => self
-                .response_history
-                .get(&self.current.id)
-                .and_then(|list| list.get(i))
+            Some(_) => self
+                .viewed_response
+                .as_ref()
                 .and_then(|r| r.response.clone()),
             None => self.response.clone(),
         };
@@ -1070,12 +1122,27 @@ impl App {
             }
             pos + 1
         };
-        self.response_view = if next + 1 == n { None } else { Some(next) };
+        if next + 1 == n {
+            self.response_view = None;
+            self.viewed_response = None;
+        } else {
+            let offset = self.response_history[&self.current.id][next].offset;
+            match crate::storage::read_response_at(offset) {
+                Ok(record) => {
+                    self.response_view = Some(next);
+                    self.viewed_response = Some(record);
+                }
+                Err(e) => {
+                    self.status_message = format!("Couldn't read that response: {e:#}");
+                    return;
+                }
+            }
+        }
         self.refresh_response_view();
     }
 
-    /// (position 1-based, total, the record shown) for the Response pane title.
-    pub fn response_history_position(&self) -> Option<(usize, usize, &ResponseRecord)> {
+    /// (position 1-based, total, summary of the response shown) for the Response pane title.
+    pub fn response_history_position(&self) -> Option<(usize, usize, &ResponseMeta)> {
         let list = self.response_history.get(&self.current.id)?;
         let i = self.response_view.unwrap_or(list.len().checked_sub(1)?);
         Some((i + 1, list.len(), list.get(i)?))
@@ -1095,22 +1162,18 @@ impl App {
         })
     }
 
-    /// Requests worth keeping across a restart: unsaved edits, a response/error, or undo history.
+    /// Requests worth keeping across a restart: unsaved edits or undo history.
+    /// Responses aren't included; they're reloaded from responses.jsonl.
     fn session_snapshot(&self) -> StoredSession {
         let mut drafts = HashMap::new();
-        let mut keep = |id: Uuid,
-                        item: &RequestItem,
-                        resp: &Option<ResponseData>,
-                        err: &Option<String>,
-                        buffers: &EditorBuffers| {
-            let history = buffers.to_stored();
-            if self.is_dirty(id) || resp.is_some() || err.is_some() || !history.is_empty() {
+        let mut keep = |id: Uuid, item: &RequestItem, history: StoredBuffers| {
+            if self.is_dirty(id) || !history.is_empty() {
                 drafts.insert(
                     id,
                     StoredDraft {
                         item: item.clone(),
-                        response: resp.clone(),
-                        last_error: err.clone(),
+                        response: None,
+                        last_error: None,
                         history,
                     },
                 );
@@ -1121,7 +1184,7 @@ impl App {
             if current_loaded && *id == self.current.id {
                 continue;
             }
-            keep(*id, &d.item, &d.response, &d.last_error, &d.buffers);
+            keep(*id, &d.item, d.buffers.to_stored());
         }
         if current_loaded {
             let mut item = self.current.clone();
@@ -1130,23 +1193,41 @@ impl App {
             item.pre_request_script = self.pre_script_state.lines.to_string();
             item.post_response_script = self.post_script_state.lines.to_string();
             item.sync_path_params();
-            keep(
-                self.current.id,
-                &item,
-                &self.response,
-                &self.last_error,
-                &self.live_buffers(),
-            );
+            let history = StoredBuffers::capture([
+                &self.url_state,
+                &self.body_state,
+                &self.pre_script_state,
+                &self.post_script_state,
+            ]);
+            keep(self.current.id, &item, history);
         }
         StoredSession { drafts }
     }
 
+    /// Write drafts.json, unless its content is unchanged since the last write.
     pub fn save_session(&mut self) {
+        use std::hash::{Hash, Hasher};
         self.session_changes = None;
-        if let Err(e) = crate::storage::save_session(&self.session_snapshot()) {
-            let detail = format!("{e:#}");
-            crate::logger::log("drafts save failed", &detail);
-            self.status_message = format!("Failed to save drafts: {detail}");
+        let json = match serde_json::to_string(&self.session_snapshot()) {
+            Ok(json) => json,
+            Err(e) => {
+                crate::logger::log("drafts serialize failed", &format!("{e:#}"));
+                return;
+            }
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        json.hash(&mut hasher);
+        let hash = hasher.finish();
+        if self.last_session_hash == Some(hash) {
+            return;
+        }
+        match crate::storage::save_session_json(&json) {
+            Ok(()) => self.last_session_hash = Some(hash),
+            Err(e) => {
+                let detail = format!("{e:#}");
+                crate::logger::log("drafts save failed", &detail);
+                self.status_message = format!("Failed to save drafts: {detail}");
+            }
         }
     }
 
@@ -1246,10 +1327,10 @@ mod tests {
             app.deliver_response(&sent_a, Some(resp(204)), None);
         }
         let mut app2 = App::new(app.workspace.clone());
-        app2.load_response_history(crate::storage::load_responses());
+        app2.load_response_history(crate::storage::read_response_lines());
         assert_eq!(app2.response_history[&a_id].len(), RESPONSES_PER_REQUEST);
         assert!(
-            crate::storage::load_responses().len() == RESPONSES_PER_REQUEST,
+            crate::storage::read_response_lines().len() == RESPONSES_PER_REQUEST,
             "file compacted"
         );
     }
@@ -1362,6 +1443,78 @@ mod tests {
         app.deliver_response(&sent_a, Some(resp(201)), None);
         assert!(!app.is_sending());
         assert!(app.in_flight.is_empty());
+    }
+
+    #[test]
+    fn past_responses_are_read_from_disk_and_survive_a_restart() {
+        let _storage = isolated_storage();
+        let (ws, a_id, _) = two_request_workspace();
+        let mut app = App::new(ws.clone());
+        app.load_request(0, 0);
+        let sent = app.current.clone();
+        app.deliver_response(&sent, Some(resp(200)), None);
+        app.deliver_response(&sent, None, Some("boom".into()));
+        app.deliver_response(&sent, Some(resp(201)), None);
+
+        // Only summaries are in memory.
+        let metas = &app.response_history[&a_id];
+        assert_eq!(
+            metas.iter().map(|m| m.status).collect::<Vec<_>>(),
+            vec![Some(200), None, Some(201)]
+        );
+
+        // Stepping back reads the body from disk, including a failure.
+        app.step_response_history(true);
+        assert!(app.viewed_response.as_ref().unwrap().error.as_deref() == Some("boom"));
+        app.step_response_history(true);
+        assert!(app.response_state.lines.to_string().contains("body 200"));
+
+        // drafts.json no longer carries responses...
+        app.save_session();
+        let drafts =
+            std::fs::read_to_string(dirs::data_dir().unwrap().join("postui").join("drafts.json"))
+                .unwrap_or_default();
+        assert!(
+            !drafts.contains("body 20"),
+            "responses stay out of drafts.json"
+        );
+
+        // ...yet after a restart the request reopens with its latest response.
+        let mut app2 = App::new(ws);
+        app2.load_response_history(crate::storage::read_response_lines());
+        app2.load_request(0, 0);
+        assert_eq!(app2.response.as_ref().map(|r| r.status), Some(201));
+        assert_eq!(app2.response_history[&a_id].len(), 3);
+    }
+
+    #[test]
+    fn loading_a_request_moves_its_draft_out_instead_of_copying() {
+        let _storage = isolated_storage();
+        let (ws, a_id, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        app.load_request(0, 1); // a is stashed as a draft
+        assert!(app.drafts.contains_key(&a_id));
+        app.load_request(0, 0);
+        assert!(
+            !app.drafts.contains_key(&a_id),
+            "the loaded request isn't also a draft"
+        );
+    }
+
+    #[test]
+    fn unchanged_session_is_not_rewritten() {
+        let _storage = isolated_storage();
+        let (ws, _, _) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        app.body_state = EditorState::new(Lines::from("edited"));
+        app.save_session();
+        let path = dirs::data_dir().unwrap().join("postui").join("drafts.json");
+        let first = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.save_session(); // nothing changed
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), first);
     }
 
     #[test]

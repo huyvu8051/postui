@@ -34,13 +34,7 @@ impl EditorBuffers {
     }
 
     pub fn to_stored(&self) -> StoredBuffers {
-        let [url, body, pre, post] = self.states().map(StoredHistory::capture);
-        StoredBuffers {
-            url,
-            body,
-            pre,
-            post,
-        }
+        StoredBuffers::capture(self.states())
     }
 
     pub fn from_stored(item: &RequestItem, stored: &StoredBuffers) -> Self {
@@ -117,6 +111,17 @@ pub struct StoredBuffers {
 }
 
 impl StoredBuffers {
+    /// Undo/redo history of the URL, body, pre- and post-script buffers (in that order).
+    pub fn capture(states: [&EditorState; 4]) -> Self {
+        let [url, body, pre, post] = states.map(StoredHistory::capture);
+        Self {
+            url,
+            body,
+            pre,
+            post,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         [&self.url, &self.body, &self.pre, &self.post]
             .iter()
@@ -127,9 +132,11 @@ impl StoredBuffers {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredDraft {
     pub item: RequestItem,
-    #[serde(default)]
+    /// Only read, for drafts.json files from older versions: responses now live in
+    /// responses.jsonl and are reloaded from there.
+    #[serde(default, skip_serializing)]
     pub response: Option<ResponseData>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub last_error: Option<String>,
     #[serde(default)]
     pub history: StoredBuffers,
@@ -188,6 +195,27 @@ mod tests {
         assert_eq!(restored.body.lines.to_string(), "x");
         restored.body.redo();
         assert_eq!(restored.body.lines.to_string(), "xhello");
+    }
+
+    #[test]
+    fn undo_history_of_a_large_buffer_is_bounded_by_size() {
+        let line = "x".repeat(99) + "\n";
+        let mut state = EditorState::new(Lines::from(line.repeat(3_000).as_str())); // 300k chars
+        for _ in 0..30 {
+            type_text(&mut state, "y"); // each insert session snapshots the whole buffer
+        }
+        let (undo, _) = state.undo_history();
+        let chars: usize = undo
+            .iter()
+            .map(|s| s.text.chars().filter(|c| *c != '\n').count())
+            .sum();
+        assert!(!undo.is_empty(), "recent steps are still undoable");
+        assert!(
+            undo.len() < 30,
+            "older snapshots were dropped ({} kept)",
+            undo.len()
+        );
+        assert!(chars <= 2_000_000, "{chars} chars kept");
     }
 
     #[test]

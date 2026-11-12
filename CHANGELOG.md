@@ -40,3 +40,11 @@ First public release candidate (0.1.0).
   sent it.
 - "Sending..." in the Response pane shows only on the request being sent, not
   on every request you open while it's in flight.
+- Resizing the terminal redraws immediately instead of on the next key press.
+
+### Changed
+
+- Lower memory use and disk writes: past responses stay on disk and are read
+  only when viewed; `drafts.json` no longer stores responses and isn't rewritten
+  when nothing changed; undo history per buffer is capped at ~2 million
+  characters; opening a request no longer copies its draft.

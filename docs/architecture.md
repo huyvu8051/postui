@@ -49,15 +49,19 @@ HTTP task (reqwest)      ──► AppEvent::Response ────────�
   (`RequestDraft`, including its editor buffers so undo survives). `is_dirty`
   compares a draft with the saved copy in the workspace.
 - **Persistence**: `App::persist()` writes `workspace.json`;
-  `save_session()` writes `drafts.json` and is called from the debounced
-  autosave and on quit.
+  `save_session()` writes `drafts.json` (skipped when unchanged) and is called
+  from the debounced autosave and on quit.
+- **Response history** is an index: `App::response_history` holds
+  `ResponseMeta` (status, time, byte offset) per request, and bodies are read
+  from `responses.jsonl` with `storage::read_response_at` only when viewed.
 
 ## Vendored edtui
 
 `vendor/edtui` is edtui 0.11.7, used through `[patch.crates-io]` in
-`Cargo.toml`. The only change is in `vendor/edtui/src/state/undo.rs`:
+`Cargo.toml`. The only changes are in `vendor/edtui/src/state/undo.rs`:
 `UndoSnapshot`, `EditorState::undo_history()` and `set_undo_history()` expose
-the undo/redo stacks so drafts can store them. When upgrading edtui, copy the
+the undo/redo stacks so drafts can store them, and each stack is bounded by
+total characters (`MAX_STACK_CHARS`) as well as by its 100 entries. When upgrading edtui, copy the
 new release over `vendor/edtui` and re-apply that patch (keep
 `vendor/edtui/LICENSE.md`).
 
