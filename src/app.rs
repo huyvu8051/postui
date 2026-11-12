@@ -9,14 +9,14 @@ use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, Re
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
+    Tabs,
     Method,
     Url,
     PathParams,
     Headers,
-    BodyMode,
     Body,
-    ScriptTab,
     ScriptEditor,
+    Console,
     Response,
 }
 
@@ -24,6 +24,11 @@ impl Focus {
     pub fn neighbor(self, dir: Direction) -> Option<Focus> {
         use Direction::{Down, Left, Right, Up};
         match (self, dir) {
+            (Focus::Tabs, Right) => Some(Focus::Method),
+            (Focus::Method, Left) => Some(Focus::Tabs),
+            (Focus::PathParams, Left) => Some(Focus::Tabs),
+            (Focus::Headers, Left) => Some(Focus::Tabs),
+            (Focus::Body, Left) => Some(Focus::Tabs),
             (Focus::Method, Right) => Some(Focus::Url),
             (Focus::Method, Down) => Some(Focus::PathParams),
             (Focus::Url, Left) => Some(Focus::Method),
@@ -31,21 +36,18 @@ impl Focus {
             (Focus::PathParams, Up) => Some(Focus::Method),
             (Focus::PathParams, Down) => Some(Focus::Headers),
             (Focus::Headers, Up) => Some(Focus::PathParams),
-            (Focus::Headers, Down) => Some(Focus::BodyMode),
-            (Focus::BodyMode, Up) => Some(Focus::Headers),
-            (Focus::BodyMode, Right) => Some(Focus::ScriptTab),
-            (Focus::BodyMode, Down) => Some(Focus::Body),
-            (Focus::Body, Up) => Some(Focus::BodyMode),
-            (Focus::Body, Right) => Some(Focus::ScriptEditor),
-            (Focus::ScriptTab, Left) => Some(Focus::BodyMode),
-            (Focus::ScriptTab, Right) => Some(Focus::Response),
-            (Focus::ScriptTab, Up) => Some(Focus::Headers),
-            (Focus::ScriptTab, Down) => Some(Focus::ScriptEditor),
-            (Focus::ScriptEditor, Left) => Some(Focus::Body),
-            (Focus::ScriptEditor, Right) => Some(Focus::Response),
-            (Focus::ScriptEditor, Up) => Some(Focus::ScriptTab),
-            (Focus::Response, Left) => Some(Focus::ScriptEditor),
-            (Focus::Response, Up) => Some(Focus::Headers),
+            (Focus::Headers, Down) => Some(Focus::Body),
+            (Focus::Headers, Right) => Some(Focus::ScriptEditor),
+            (Focus::Body, Up) => Some(Focus::Headers),
+            (Focus::Body, Right) => Some(Focus::Response),
+            (Focus::ScriptEditor, Left) => Some(Focus::Headers),
+            (Focus::ScriptEditor, Up) => Some(Focus::PathParams),
+            (Focus::ScriptEditor, Down) => Some(Focus::Console),
+            (Focus::Console, Up) => Some(Focus::ScriptEditor),
+            (Focus::Console, Left) => Some(Focus::Headers),
+            (Focus::Console, Down) => Some(Focus::Response),
+            (Focus::Response, Left) => Some(Focus::Body),
+            (Focus::Response, Up) => Some(Focus::Console),
             _ => None,
         }
     }
@@ -96,8 +98,8 @@ pub enum SidebarEntry {
 pub enum LeaderState {
     #[default]
     Idle,
-    AwaitingS,
-    AwaitingF,
+    /// `space` pressed; the next key picks the action.
+    Awaiting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +151,10 @@ pub enum Popup {
     CollectionFinder {
         query: EditorState,
         selected: usize,
+        /// false = typing in the search input; true = navigating the list (vim keys).
+        browse: bool,
+        /// Entry awaiting a y/n delete confirmation.
+        confirm_delete: Option<SidebarEntry>,
     },
 }
 
@@ -193,6 +199,13 @@ pub struct App {
     pub source: Option<RequestSource>,
 
     pub focus: Focus,
+    /// Open-tabs sidebar (toggled with `space t`).
+    pub sidebar_visible: bool,
+    /// Where `space t` returns to when it hides the sidebar.
+    pub focus_before_tabs: Focus,
+    pub tab_index: usize,
+    /// Tab awaiting a y/n "discard unsaved changes" confirmation.
+    pub tab_confirm_close: Option<Uuid>,
     pub panel_mode: PanelMode,
     pub maximized: bool,
     pub editor_events: EditorEventHandler,
@@ -204,6 +217,8 @@ pub struct App {
     pub pre_script_state: EditorState,
     pub post_script_state: EditorState,
     pub script_console: Vec<String>,
+    /// Read-only vim view over `script_console`, rebuilt whenever new lines arrive.
+    pub console_state: EditorState,
 
     pub header_index: usize,
     pub form_field_index: usize,
@@ -244,6 +259,10 @@ impl App {
             current: RequestItem::new("untitled"),
             source: None,
             focus: Focus::Method,
+            sidebar_visible: false,
+            focus_before_tabs: Focus::Method,
+            tab_index: 0,
+            tab_confirm_close: None,
             panel_mode: PanelMode::default(),
             maximized: false,
             editor_events: EditorEventHandler::default(),
@@ -253,6 +272,7 @@ impl App {
             pre_script_state: EditorState::default(),
             post_script_state: EditorState::default(),
             script_console: Vec::new(),
+            console_state: EditorState::default(),
             header_index: 0,
             form_field_index: 0,
             path_param_index: 0,
@@ -262,7 +282,7 @@ impl App {
             response_is_json: false,
             loading: false,
             status_message: String::from(
-                "hjkl: select pane | Enter: focus, Esc: unfocus | space s f: find/open request | Ctrl+Enter: send | e: environments | q: quit",
+                "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | e: environments | q: quit",
             ),
             history: Vec::new(),
             env_index: 0,
@@ -274,6 +294,9 @@ impl App {
 
     pub fn move_focus(&mut self, dir: Direction) {
         if let Some(next) = self.focus.neighbor(dir) {
+            if next == Focus::Tabs && !self.sidebar_visible {
+                return;
+            }
             self.focus = next;
         }
     }
@@ -291,11 +314,40 @@ impl App {
         entries
     }
 
-    pub fn collection_finder_matches(&self, query: &str) -> Vec<SidebarEntry> {
+    pub fn collection_finder_matches(&self, query: &str, browse: bool) -> Vec<SidebarEntry> {
         if query.trim().is_empty() {
+            // Browsing shows the full collection tree; the bare finder shows Recent first.
+            let recent = self.recent_entries();
+            if !browse && !recent.is_empty() {
+                return recent;
+            }
             return self.flatten_sidebar();
         }
         self.fuzzy_ranked_requests(query)
+    }
+
+    /// Recently opened requests, newest first. Ids of deleted requests are skipped.
+    pub fn recent_entries(&self) -> Vec<SidebarEntry> {
+        self.workspace
+            .recent_requests
+            .iter()
+            .filter_map(|id| {
+                self.workspace.collections.iter().enumerate().find_map(|(ci, c)| {
+                    c.requests
+                        .iter()
+                        .position(|r| r.id == *id)
+                        .map(|ri| SidebarEntry::Request(ci, ri))
+                })
+            })
+            .collect()
+    }
+
+    fn record_recent(&mut self, id: Uuid) {
+        const RECENT_LIMIT: usize = 20;
+        let recent = &mut self.workspace.recent_requests;
+        recent.retain(|r| *r != id);
+        recent.insert(0, id);
+        recent.truncate(RECENT_LIMIT);
     }
 
     fn fuzzy_ranked_requests(&self, query: &str) -> Vec<SidebarEntry> {
@@ -352,11 +404,97 @@ impl App {
     pub fn push_script_log(&mut self, lines: Vec<String>) {
         self.script_console.extend(lines);
         self.drop_oldest_script_console_lines_past_limit();
+        self.rebuild_console_state();
+    }
+
+    /// Fresh buffer with the cursor on the last line, so the newest output is in view.
+    fn rebuild_console_state(&mut self) {
+        self.console_state = EditorState::new(Lines::from(self.script_console.join("\n").as_str()));
+        let last_row = self.script_console.len().saturating_sub(1);
+        self.console_state.cursor = edtui::Index2::new(last_row, 0);
     }
 
     fn drop_oldest_script_console_lines_past_limit(&mut self) {
         let excess = self.script_console.len().saturating_sub(SCRIPT_CONSOLE_LIMIT);
         self.script_console.drain(0..excess);
+    }
+
+    pub fn find_request(&self, id: Uuid) -> Option<(usize, usize)> {
+        self.workspace.collections.iter().enumerate().find_map(|(ci, c)| {
+            c.requests.iter().position(|r| r.id == id).map(|ri| (ci, ri))
+        })
+    }
+
+    /// Drop tabs whose request no longer exists (e.g. deleted in the browser).
+    pub fn prune_tabs(&mut self) {
+        let alive: HashSet<Uuid> = self
+            .workspace
+            .collections
+            .iter()
+            .flat_map(|c| c.requests.iter().map(|r| r.id))
+            .collect();
+        self.workspace.open_tabs.retain(|id| alive.contains(id));
+        self.tab_index = self.tab_index.min(self.workspace.open_tabs.len().saturating_sub(1));
+    }
+
+    /// Current in-memory version of a request: the live editors for the loaded one,
+    /// its stashed draft otherwise, or None when it has never been edited this session.
+    fn working_copy(&self, id: Uuid) -> Option<RequestItem> {
+        if self.source.is_some() && self.current.id == id {
+            let mut item = self.current.clone();
+            item.url = self.url_state.lines.to_string();
+            item.body = self.body_state.lines.to_string();
+            item.pre_request_script = self.pre_script_state.lines.to_string();
+            item.post_response_script = self.post_script_state.lines.to_string();
+            item.sync_path_params();
+            return Some(item);
+        }
+        self.drafts.get(&id).map(|d| d.item.clone())
+    }
+
+    /// True when the request has edits that `Ctrl+S` hasn't written back yet.
+    pub fn is_dirty(&self, id: Uuid) -> bool {
+        let Some(working) = self.working_copy(id) else {
+            return false;
+        };
+        let Some((ci, ri)) = self.find_request(id) else {
+            return false;
+        };
+        let mut saved = self.workspace.collections[ci].requests[ri].clone();
+        // Loading fills path_params from the URL; don't count that as an edit.
+        saved.sync_path_params();
+        serde_json::to_value(&saved).ok() != serde_json::to_value(&working).ok()
+    }
+
+    /// Close a tab, discarding its unsaved draft. Closing the loaded request
+    /// switches to a neighbouring tab, or clears the editor when none is left.
+    pub fn close_tab(&mut self, id: Uuid) {
+        let Some(pos) = self.workspace.open_tabs.iter().position(|t| *t == id) else {
+            return;
+        };
+        self.workspace.open_tabs.remove(pos);
+        self.drafts.remove(&id);
+        let closing_current = self.source.is_some() && self.current.id == id;
+        if closing_current {
+            // Don't let load_request stash the tab we're discarding.
+            self.source = None;
+            let next = self
+                .workspace
+                .open_tabs
+                .get(pos)
+                .or_else(|| self.workspace.open_tabs.get(pos.saturating_sub(1)))
+                .copied();
+            match next.and_then(|n| self.find_request(n)) {
+                Some((ci, ri)) => self.load_request(ci, ri),
+                None => {
+                    self.restore_saved_item(RequestItem::new("untitled"));
+                    self.sync_editors_from_current();
+                    self.refresh_response_view();
+                }
+            }
+        }
+        self.tab_index = pos.min(self.workspace.open_tabs.len().saturating_sub(1));
+        self.persist();
     }
 
     pub fn load_request(&mut self, coll_idx: usize, req_idx: usize) {
@@ -383,6 +521,11 @@ impl App {
         self.form_field_index = 0;
         self.path_param_index = 0;
         self.refresh_response_view();
+        self.record_recent(self.current.id);
+        if !self.workspace.open_tabs.contains(&self.current.id) {
+            self.workspace.open_tabs.push(self.current.id);
+        }
+        self.persist();
         self.status_message = format!("Loaded '{}'", self.current.name);
     }
 
@@ -429,7 +572,7 @@ impl App {
             }
             None => {
                 self.status_message =
-                    "No collection request loaded — open <space> s f and Ctrl+N to create one first"
+                    "No collection request loaded — open <space> f and press a (or Ctrl+R) to create one first"
                         .into();
                 return;
             }

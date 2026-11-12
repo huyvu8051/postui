@@ -41,6 +41,7 @@ enum AppEvent {
 async fn main() -> Result<()> {
     let workspace = storage::load()?;
     let mut app = App::new(workspace);
+    app.prune_tabs();
     app.refresh_response_view();
 
     enable_raw_mode()?;

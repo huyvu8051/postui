@@ -8,7 +8,7 @@ use crate::app::{
 use crate::model::{BodyMode, Collection, Environment, FormField, FormValue, Header, RequestItem};
 
 fn is_vim_editor_focus(app: &App) -> bool {
-    matches!(app.focus, Focus::Url | Focus::Response | Focus::ScriptEditor)
+    matches!(app.focus, Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console)
         || (app.focus == Focus::Body && app.current.body_mode == BodyMode::Raw)
 }
 
@@ -69,6 +69,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    if app.tab_confirm_close.is_some() {
+        handle_tab_close_confirm(app, key);
+        return Action::None;
+    }
+
     if let Some(action) = handle_always_global_key(app, key) {
         return action;
     }
@@ -78,6 +83,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     if handle_leader_key(app, key) {
+        return Action::None;
+    }
+
+    if handle_tab_shortcut(app, key) {
         return Action::None;
     }
 
@@ -114,15 +123,19 @@ fn handle_always_global_key(app: &mut App, key: KeyEvent) -> Option<Action> {
         return Some(Action::None);
     }
     if key.code == KeyCode::F(3) {
-        app.maximized = !app.maximized;
-        app.status_message = if app.maximized {
-            "Panel maximized — F3 to restore layout".into()
-        } else {
-            "Layout restored".into()
-        };
+        toggle_maximized(app);
         return Some(Action::None);
     }
     None
+}
+
+fn toggle_maximized(app: &mut App) {
+    app.maximized = !app.maximized;
+    app.status_message = if app.maximized {
+        "Panel maximized — space z (or F3) to restore layout".into()
+    } else {
+        "Layout restored".into()
+    };
 }
 
 fn handle_navigate_key(app: &mut App, key: KeyEvent) {
@@ -132,6 +145,10 @@ fn handle_navigate_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('k') | KeyCode::Up => app.move_focus(Direction::Up),
         KeyCode::Char('l') | KeyCode::Right => app.move_focus(Direction::Right),
         KeyCode::Enter => app.panel_mode = PanelMode::Interact,
+        KeyCode::Char('[') if app.focus == Focus::Body => cycle_body_mode(app, false),
+        KeyCode::Char(']') if app.focus == Focus::Body => cycle_body_mode(app, true),
+        KeyCode::Char('[') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.prev(),
+        KeyCode::Char(']') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.next(),
         _ => {}
     }
 }
@@ -143,43 +160,177 @@ fn handle_interact_key(app: &mut App, key: KeyEvent) {
     }
 
     match app.focus {
+        Focus::Tabs => handle_tabs_key(app, key),
         Focus::Method => handle_method_key(app, key),
         Focus::PathParams => handle_path_params_key(app, key),
         Focus::Headers => handle_headers_key(app, key),
-        Focus::BodyMode => handle_body_mode_key(app, key),
         Focus::Body => handle_body_field_key(app, key),
-        Focus::ScriptTab => handle_script_tab_key(app, key),
-        Focus::Url | Focus::Response | Focus::ScriptEditor => unreachable!("handled above"),
+        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console => unreachable!("handled above"),
     }
 }
 
 fn handle_leader_key(app: &mut App, key: KeyEvent) -> bool {
     match (app.leader, key.code) {
         (LeaderState::Idle, KeyCode::Char(' ')) => {
-            app.leader = LeaderState::AwaitingS;
-            true
-        }
-        (LeaderState::AwaitingS, KeyCode::Char('s')) => {
-            app.leader = LeaderState::AwaitingF;
-            true
-        }
-        (LeaderState::AwaitingF, KeyCode::Char('f')) => {
-            app.leader = LeaderState::Idle;
-            open_collection_finder(app);
+            app.leader = LeaderState::Awaiting;
             true
         }
         (LeaderState::Idle, _) => false,
-        _ => {
+        (LeaderState::Awaiting, code) => {
             app.leader = LeaderState::Idle;
+            match code {
+                KeyCode::Char('f') => open_collection_finder(app),
+                KeyCode::Char('t') => toggle_tabs_sidebar(app),
+                KeyCode::Char('z') => toggle_maximized(app),
+                KeyCode::Char('e') => {
+                    app.popup = Popup::EnvManager;
+                    app.env_index = 0;
+                }
+                KeyCode::Char(c) => {
+                    if let Some(target) = leader_focus_target(c) {
+                        jump_into(app, target);
+                    }
+                }
+                _ => {}
+            }
             true
         }
     }
+}
+
+/// `space t`: show the sidebar and jump into it; pressed again while in it, hide it.
+fn toggle_tabs_sidebar(app: &mut App) {
+    if app.sidebar_visible && app.focus == Focus::Tabs {
+        app.sidebar_visible = false;
+        app.focus = app.focus_before_tabs;
+        app.panel_mode = PanelMode::Navigate;
+        return;
+    }
+    if app.focus != Focus::Tabs {
+        app.focus_before_tabs = app.focus;
+    }
+    app.sidebar_visible = true;
+    // Start on the loaded request's tab.
+    if let Some(pos) = app.workspace.open_tabs.iter().position(|t| *t == app.current.id) {
+        app.tab_index = pos;
+    }
+    jump_into(app, Focus::Tabs);
+}
+
+fn handle_tabs_key(app: &mut App, key: KeyEvent) {
+    let len = app.workspace.open_tabs.len();
+    let selected = app.workspace.open_tabs.get(app.tab_index).copied();
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down if len > 0 => {
+            app.tab_index = (app.tab_index + 1).min(len - 1);
+        }
+        KeyCode::Char('k') | KeyCode::Up => app.tab_index = app.tab_index.saturating_sub(1),
+        KeyCode::Char('g') => app.tab_index = 0,
+        KeyCode::Char('G') => app.tab_index = len.saturating_sub(1),
+        KeyCode::Enter | KeyCode::Char('l') => {
+            if let Some((ci, ri)) = selected.and_then(|id| app.find_request(id)) {
+                app.load_request(ci, ri);
+            }
+        }
+        KeyCode::Char('d') | KeyCode::Char('x') => {
+            if let Some(id) = selected {
+                if app.is_dirty(id) {
+                    app.tab_confirm_close = Some(id);
+                } else {
+                    app.close_tab(id);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `H`/`L`: previous/next open tab (wraps). `J`/`K` while in the sidebar: move the
+/// selected tab down/up. Only reached outside vim buffers.
+fn handle_tab_shortcut(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('H') => cycle_tab(app, false),
+        KeyCode::Char('L') => cycle_tab(app, true),
+        KeyCode::Char('J') if app.focus == Focus::Tabs => move_tab(app, true),
+        KeyCode::Char('K') if app.focus == Focus::Tabs => move_tab(app, false),
+        _ => return false,
+    }
+    true
+}
+
+fn cycle_tab(app: &mut App, forward: bool) {
+    let tabs = &app.workspace.open_tabs;
+    let len = tabs.len();
+    if len == 0 {
+        app.status_message = "No open tabs".into();
+        return;
+    }
+    let next = match tabs.iter().position(|t| app.source.is_some() && *t == app.current.id) {
+        Some(pos) if forward => (pos + 1) % len,
+        Some(pos) => (pos + len - 1) % len,
+        None => 0,
+    };
+    let id = tabs[next];
+    if let Some((ci, ri)) = app.find_request(id) {
+        app.load_request(ci, ri);
+        app.tab_index = next;
+    }
+}
+
+fn move_tab(app: &mut App, down: bool) {
+    let len = app.workspace.open_tabs.len();
+    let i = app.tab_index;
+    if i >= len {
+        return;
+    }
+    let j = if down { i + 1 } else { i.wrapping_sub(1) };
+    if j >= len {
+        return;
+    }
+    app.workspace.open_tabs.swap(i, j);
+    app.tab_index = j;
+    app.persist();
+}
+
+/// A pending "discard unsaved changes?" swallows the next key: y closes, anything else cancels.
+fn handle_tab_close_confirm(app: &mut App, key: KeyEvent) {
+    let Some(id) = app.tab_confirm_close.take() else {
+        return;
+    };
+    if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+        app.close_tab(id);
+    } else {
+        app.status_message = "Close cancelled".into();
+    }
+}
+
+/// `space <key>` pane shortcuts.
+fn leader_focus_target(c: char) -> Option<Focus> {
+    Some(match c {
+        'u' => Focus::Url,
+        'm' => Focus::Method,
+        'h' => Focus::Headers,
+        'p' => Focus::PathParams,
+        's' => Focus::ScriptEditor,
+        'c' => Focus::Console,
+        'b' => Focus::Body,
+        'r' => Focus::Response,
+        _ => return None,
+    })
+}
+
+/// Focus a pane and enter it directly (vim buffers land in Normal mode).
+fn jump_into(app: &mut App, target: Focus) {
+    app.focus = target;
+    app.panel_mode = PanelMode::Interact;
 }
 
 fn open_collection_finder(app: &mut App) {
     app.popup = Popup::CollectionFinder {
         query: single_line_state(""),
         selected: 0,
+        browse: false,
+        confirm_delete: None,
     };
 }
 
@@ -239,26 +390,13 @@ fn handle_headers_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn handle_body_mode_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('h') | KeyCode::Left => {
-            app.current.body_mode = app.current.body_mode.prev();
-            app.form_field_index = 0;
-        }
-        KeyCode::Char('l') | KeyCode::Right => {
-            app.current.body_mode = app.current.body_mode.next();
-            app.form_field_index = 0;
-        }
-        _ => {}
-    }
-}
-
-fn handle_script_tab_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('h') | KeyCode::Left => app.script_tab = app.script_tab.prev(),
-        KeyCode::Char('l') | KeyCode::Right => app.script_tab = app.script_tab.next(),
-        _ => {}
-    }
+fn cycle_body_mode(app: &mut App, forward: bool) {
+    app.current.body_mode = if forward {
+        app.current.body_mode.next()
+    } else {
+        app.current.body_mode.prev()
+    };
+    app.form_field_index = 0;
 }
 
 fn handle_body_field_key(app: &mut App, key: KeyEvent) {
@@ -334,6 +472,7 @@ fn current_editor_mode(app: &App) -> EditorMode {
         Focus::Url => app.url_state.mode,
         Focus::Body => app.body_state.mode,
         Focus::Response => app.response_state.mode,
+        Focus::Console => app.console_state.mode,
         Focus::ScriptEditor => match app.script_tab {
             ScriptTab::Pre => app.pre_script_state.mode,
             ScriptTab::Post => app.post_script_state.mode,
@@ -363,6 +502,11 @@ fn handle_editor_pane_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::None;
     }
 
+    if app.focus == Focus::Console {
+        handle_console_key(app, key);
+        return Action::None;
+    }
+
     let state = match app.focus {
         Focus::Url => &mut app.url_state,
         Focus::Body => &mut app.body_state,
@@ -379,6 +523,25 @@ fn handle_editor_pane_key(app: &mut App, key: KeyEvent) -> Action {
         app.sync_current_from_editors();
     }
     Action::None
+}
+
+/// Console is read-only: vim motions/search/yank work, but any edit is reverted.
+fn handle_console_key(app: &mut App, key: KeyEvent) {
+    let before = app.console_state.lines.to_string();
+    app.editor_events.on_key_event(key, &mut app.console_state);
+    let state = &mut app.console_state;
+    if state.mode == EditorMode::Insert {
+        state.mode = EditorMode::Normal;
+    }
+    if state.lines.to_string() != before {
+        let cursor = state.cursor;
+        state.lines = edtui::Lines::from(before.as_str());
+        let last_row = state.lines.len().saturating_sub(1);
+        let row = cursor.row.min(last_row);
+        let col = cursor.col.min(state.lines.len_col(row).unwrap_or(0).saturating_sub(1));
+        state.cursor = edtui::Index2::new(row, col);
+        app.status_message = "Console is read-only".into();
+    }
 }
 
 fn format_body(app: &mut App) {
@@ -707,6 +870,17 @@ fn collection_finder_selected(app: &App) -> usize {
     }
 }
 
+fn collection_finder_browse(app: &App) -> bool {
+    matches!(&app.popup, Popup::CollectionFinder { browse: true, .. })
+}
+
+fn set_collection_finder_browse(app: &mut App, value: bool) {
+    if let Popup::CollectionFinder { browse, selected, .. } = &mut app.popup {
+        *browse = value;
+        *selected = 0;
+    }
+}
+
 fn collection_finder_query_text(app: &App) -> String {
     match &app.popup {
         Popup::CollectionFinder { query, .. } => query.lines.to_string(),
@@ -730,14 +904,64 @@ fn select_prev_collection_finder_match(app: &mut App, selected: usize) {
     set_collection_finder_selected(app, selected.saturating_sub(1));
 }
 
+fn finder_activate(app: &mut App, entry: Option<SidebarEntry>) {
+    match entry {
+        Some(SidebarEntry::Collection(ci)) => {
+            let id = app.workspace.collections[ci].id;
+            if !app.expanded.remove(&id) {
+                app.expanded.insert(id);
+            }
+        }
+        Some(SidebarEntry::Request(ci, ri)) => {
+            app.load_request(ci, ri);
+            app.popup = Popup::None;
+        }
+        None => {}
+    }
+}
+
+fn finder_new_request(app: &mut App, entry: Option<SidebarEntry>) {
+    if let Some(SidebarEntry::Collection(ci) | SidebarEntry::Request(ci, _)) = entry {
+        open_text_input(app, "New request name", TextInputTarget::NewRequestName(ci));
+    }
+}
+
+fn request_finder_delete(app: &mut App, entry: Option<SidebarEntry>) {
+    if let Popup::CollectionFinder { confirm_delete, .. } = &mut app.popup {
+        *confirm_delete = entry;
+    }
+}
+
 fn handle_collection_finder_key(app: &mut App, key: KeyEvent) {
+    // A pending delete swallows the next key: y confirms, anything else cancels.
+    let pending = match &mut app.popup {
+        Popup::CollectionFinder { confirm_delete, .. } => confirm_delete.take(),
+        _ => None,
+    };
+    if let Some(entry) = pending {
+        if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+            delete_collection_finder_selection(app, Some(entry));
+        } else {
+            app.status_message = "Delete cancelled".into();
+        }
+        return;
+    }
+
+    let browse = collection_finder_browse(app);
+
     if key.code == KeyCode::Esc {
-        app.popup = Popup::None;
+        // Vim-like: Esc leaves the search input for the list; Esc in the list closes.
+        if browse {
+            app.popup = Popup::None;
+        } else {
+            set_collection_finder_browse(app, true);
+        }
         return;
     }
 
     let selected = collection_finder_selected(app);
-    let matches = app.collection_finder_matches(&collection_finder_query_text(app));
+    let matches = app.collection_finder_matches(&collection_finder_query_text(app), browse);
+    let current = matches.get(selected).copied();
 
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
@@ -750,11 +974,7 @@ fn handle_collection_finder_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('r') => {
-                if let Some(SidebarEntry::Collection(ci) | SidebarEntry::Request(ci, _)) =
-                    matches.get(selected).copied()
-                {
-                    open_text_input(app, "New request name", TextInputTarget::NewRequestName(ci));
-                }
+                finder_new_request(app, current);
                 return;
             }
             KeyCode::Char('a') => {
@@ -762,38 +982,68 @@ fn handle_collection_finder_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             KeyCode::Char('d') => {
-                delete_collection_finder_selection(app, matches.get(selected).copied());
+                request_finder_delete(app, current);
                 return;
             }
             _ => {}
         }
     }
 
+    if browse {
+        handle_collection_browse_key(app, key, selected, &matches);
+        return;
+    }
+
     match key.code {
         KeyCode::Down => select_next_collection_finder_match(app, selected, matches.len()),
         KeyCode::Up => select_prev_collection_finder_match(app, selected),
-        KeyCode::Enter => match matches.get(selected).copied() {
-            Some(SidebarEntry::Collection(ci)) => {
-                let id = app.workspace.collections[ci].id;
-                if app.expanded.contains(&id) {
-                    app.expanded.remove(&id);
-                } else {
-                    app.expanded.insert(id);
-                }
-            }
-            Some(SidebarEntry::Request(ci, ri)) => {
-                app.load_request(ci, ri);
-                app.popup = Popup::None;
-            }
-            None => {}
-        },
+        KeyCode::Enter => finder_activate(app, current),
         _ => {
             if let Popup::CollectionFinder { query, .. } = &mut app.popup {
                 app.editor_events.on_key_event(key, query);
             }
-            let new_len = app.collection_finder_matches(&collection_finder_query_text(app)).len();
+            let new_len = app
+                .collection_finder_matches(&collection_finder_query_text(app), false)
+                .len();
             set_collection_finder_selected(app, selected.min(new_len.saturating_sub(1)));
         }
+    }
+}
+
+/// List-focused ("browse") keys: vim-style navigation over the collection tree.
+fn handle_collection_browse_key(app: &mut App, key: KeyEvent, selected: usize, matches: &[SidebarEntry]) {
+    let current = matches.get(selected).copied();
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => select_next_collection_finder_match(app, selected, matches.len()),
+        KeyCode::Char('k') | KeyCode::Up => select_prev_collection_finder_match(app, selected),
+        KeyCode::Char('g') => set_collection_finder_selected(app, 0),
+        KeyCode::Char('G') => set_collection_finder_selected(app, matches.len().saturating_sub(1)),
+        KeyCode::Char('/') | KeyCode::Char('i') => set_collection_finder_browse(app, false),
+        KeyCode::Enter => finder_activate(app, current),
+        KeyCode::Char('l') | KeyCode::Right => match current {
+            Some(SidebarEntry::Collection(ci)) => {
+                let id = app.workspace.collections[ci].id;
+                app.expanded.insert(id);
+            }
+            Some(SidebarEntry::Request(..)) => finder_activate(app, current),
+            None => {}
+        },
+        KeyCode::Char('h') | KeyCode::Left => match current {
+            Some(SidebarEntry::Collection(ci)) => {
+                let id = app.workspace.collections[ci].id;
+                app.expanded.remove(&id);
+            }
+            Some(SidebarEntry::Request(ci, _)) => {
+                if let Some(pos) = matches.iter().position(|e| *e == SidebarEntry::Collection(ci)) {
+                    set_collection_finder_selected(app, pos);
+                }
+            }
+            None => {}
+        },
+        KeyCode::Char('a') => finder_new_request(app, current),
+        KeyCode::Char('A') => open_text_input(app, "New collection name", TextInputTarget::NewCollectionName),
+        KeyCode::Char('d') => request_finder_delete(app, current),
+        _ => {}
     }
 }
 
@@ -816,6 +1066,7 @@ fn delete_collection_finder_selection(app: &mut App, entry: Option<SidebarEntry>
         }
         None => {}
     }
+    app.prune_tabs();
     let selected = collection_finder_selected(app).saturating_sub(1);
     set_collection_finder_selected(app, selected);
 }

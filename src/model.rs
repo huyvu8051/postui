@@ -275,6 +275,12 @@ pub struct Workspace {
     pub collections: Vec<Collection>,
     pub environments: Vec<Environment>,
     pub active_environment: Option<Uuid>,
+    /// Request ids, most recently opened first. Shown by the finder when its query is empty.
+    #[serde(default)]
+    pub recent_requests: Vec<Uuid>,
+    /// Requests open as tabs in the sidebar, in opening order.
+    #[serde(default)]
+    pub open_tabs: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone)]

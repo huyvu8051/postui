@@ -87,6 +87,22 @@ fn install_console<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Vec<
     Ok(())
 }
 
+/// `pm.clipboard.set(text)` — the only clipboard access scripts get (write-only).
+fn install_clipboard<'lua>(lua: &'lua Lua, pm: &Table<'lua>, logs: Rc<RefCell<Vec<String>>>) -> mlua::Result<()> {
+    let clipboard = lua.create_table()?;
+    let set_fn = lua.create_function(move |_, text: String| {
+        let chars = text.chars().count();
+        arboard::Clipboard::new()
+            .and_then(|mut c| c.set_text(text))
+            .map_err(|e| mlua::Error::RuntimeError(format!("clipboard unavailable: {e}")))?;
+        logs.borrow_mut().push(format!("clipboard: copied {chars} chars"));
+        Ok(())
+    })?;
+    clipboard.set("set", set_fn)?;
+    pm.set("clipboard", clipboard)?;
+    Ok(())
+}
+
 fn install_environment<'lua>(pm: &Table<'lua>, env: Rc<RefCell<Environment>>) -> mlua::Result<()> {
     pm.set("environment", EnvHandle(env))?;
     Ok(())
@@ -176,6 +192,7 @@ pub fn run_pre_request(script: &str, req: &mut RequestItem, env: &mut Option<Env
         let pm = lua.create_table()?;
 
         install_console(&lua, &pm, logs.clone())?;
+        install_clipboard(&lua, &pm, logs.clone())?;
         if let Some(handle) = &env_handle {
             install_environment(&pm, handle.clone())?;
         }
@@ -207,6 +224,7 @@ pub fn run_post_response(script: &str, resp: &ResponseData, env: &mut Option<Env
         let pm = lua.create_table()?;
 
         install_console(&lua, &pm, logs.clone())?;
+        install_clipboard(&lua, &pm, logs.clone())?;
         if let Some(handle) = &env_handle {
             install_environment(&pm, handle.clone())?;
         }
@@ -222,4 +240,23 @@ pub fn run_post_response(script: &str, resp: &ResponseData, env: &mut Option<Env
     }
 
     finish(logs, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_set_is_exposed_to_pre_and_post_scripts() {
+        let mut req = RequestItem::new("t");
+        let mut env = None;
+        let out = run_pre_request("pm.console.log(type(pm.clipboard.set))", &mut req, &mut env);
+        assert_eq!(out.error, None);
+        assert_eq!(out.logs, vec!["function"]);
+
+        let resp = ResponseData { status: 200, headers: vec![], body: String::new(), duration_ms: 0 };
+        let out = run_post_response("pm.console.log(type(pm.clipboard.set))", &resp, &mut env);
+        assert_eq!(out.error, None);
+        assert_eq!(out.logs, vec!["function"]);
+    }
 }

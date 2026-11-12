@@ -13,11 +13,14 @@ Requests, collections, and environments are persisted to
 
 ## Layout
 
-- **Collections** (left): saved collections and requests.
+- **Collections**: browse/search saved collections and requests in a popup (`space f`).
 - **Method / URL** (top right): request line. URL is a real vim buffer (`edtui`).
 - **Path Params**: auto-detected `:name` segments from the URL, per request.
-- **Headers**: request headers.
-- **Body / Response**: a Raw/Form Data/Binary type selector, the body editor
+- **Headers** (middle row, left) and **Scripts** (middle row, right): request
+  headers beside the Pre-request / Post-response Lua editor and its Console.
+  Focus the Script pane (without entering it) and press `[` / `]` to switch
+  between Pre-request and Post-response.
+- **Body / Response** (bottom row, side by side): a Raw/Form Data/Binary type selector, the body editor
   for whichever type is selected, and the last response. Raw body and
   Response are real vim buffers. A JSON response body is auto-detected, pretty-printed, and
   syntax-highlighted (`edtui`'s built-in `syntect`-based highlighter); the
@@ -35,7 +38,7 @@ bare letters like `q`/`e`, which are global shortcuts everywhere else —
 `edtui`'s own Normal mode uses those for real vim motions). `Esc` in Normal mode
 leaves the buffer back to pane navigation (`hjkl`); `Ctrl+Enter`/`F5` (send) and
 `Ctrl+S` (save) always work too. To quit or open the environment manager,
-navigate to Sidebar/Headers/Path Params/Body Type/Body-in-Form-Data-or-Binary first.
+navigate to Method/Headers/Path Params/Body-in-Form-Data-or-Binary first.
 
 The key/value popup (env variable, request header, form-field) is a 90%×90%
 panel that works like the main UI: `hjkl` selects Key/Value, `Enter`/`i`
@@ -51,20 +54,84 @@ type-and-Enter box.
 | Key | Action |
 |---|---|
 | `h` `j` `k` `l` | Move focus between panes |
-| `F3` | Maximize the focused pane full-screen; `F3` again to restore the layout |
+| `space z` / `F3` | Maximize the focused pane full-screen; again to restore the layout (`space z` works while selecting a pane; `F3` also works inside a vim buffer) |
 | `Ctrl+Enter` / `F5` | Send the current request |
 | `Ctrl+S` | Save the loaded request back to its collection |
-| `q` | Quit (Sidebar/Headers/Path Params focus only — see Editing model) |
+| `q` | Quit (Headers/Path Params/Method focus only — see Editing model) |
 | `e` | Open the environment manager (same restriction) |
 
-### Sidebar
+### Leader shortcuts (`space` + key)
+
+Work whenever you're not typing inside a vim buffer. Pane shortcuts focus the
+pane **and enter it** (vim buffers land in Normal mode; `Esc` in Normal goes
+back to pane navigation).
+
 | Key | Action |
 |---|---|
-| `j`/`k`, `↓`/`↑` | Move selection |
-| `Enter` | Expand/collapse a collection, or load a request into the editor |
+| `space u` | URL |
+| `space m` | Method |
+| `space p` | Path Params |
+| `space h` | Headers |
+| `space b` | Body |
+| `space s` | Script editor |
+| `space c` | Script Console (read-only vim buffer: `hjkl`, `gg`/`G`, `/` search, `v`+`y` copy) |
+| `space r` | Response |
+| `space e` | Environment manager |
+| `space f` | Collection browser |
+| `space t` | Show the open-tabs sidebar and jump into it; again (while in it) to hide it |
+| `space z` | Maximize / restore the focused pane |
+
+### Open tabs sidebar (`space t`)
+Every request you open becomes a tab. The list is saved in `workspace.json`,
+so it survives restarts (unsaved edits and responses don't, yet). The sidebar
+is hidden by default; `space t` shows it on the left and focuses it, and
+pressing it again while it's focused hides it. With it visible, `h` from
+Method/Path Params/Headers/Body also reaches it.
+
+`▶` marks the loaded request, `●` marks unsaved edits (not yet `Ctrl+S`).
+
+| Key | Action |
+|---|---|
+| `j`/`k`, `g`/`G` | Move selection |
+| `Enter` / `l` | Open the selected tab |
+| `d` / `x` | Close the tab (asks `y/n` first if it has unsaved edits, which are then discarded) |
+| `Shift+J` / `Shift+K` | Move the selected tab down / up |
+
+`Shift+H` / `Shift+L` switch to the previous / next tab from anywhere outside
+a vim buffer — the sidebar doesn't need to be visible. It wraps around at the
+ends.
+
+Closing the loaded request switches to the next tab, or clears the editor if
+it was the last one. Deleting a request in the collection browser also
+closes its tab.
+
+### Collection browser (`space f`)
+A 90%×90% popup with a search input on top and the collection list below.
+It opens with the search input focused; an empty query lists **Recent**
+requests, typing fuzzy-filters requests.
+
+| Key (search input) | Action |
+|---|---|
+| type | Filter requests |
+| `↑`/`↓`, `Ctrl+N`/`Ctrl+P` | Move selection |
+| `Enter` | Load the selected request (or expand/collapse a collection) |
+| `Esc` | Leave the input and browse the list |
+
+| Key (list / browse) | Action |
+|---|---|
+| `j`/`k`, `↓`/`↑` | Move selection (empty query shows the full collection tree) |
+| `g` / `G` | First / last entry |
+| `l` / `→` | Expand a collection, or load a request |
+| `h` / `←` | Collapse a collection, or jump to a request's collection |
+| `Enter` | Expand/collapse a collection, or load a request |
 | `a` | New request in the selected collection |
 | `A` | New collection |
-| `d` | Delete selected collection/request |
+| `d` | Delete selected collection/request (asks `y/n` first; written to disk immediately) |
+| `/` or `i` | Back to the search input |
+| `Esc` | Close |
+
+`Ctrl+R` (new request), `Ctrl+A` (new collection) and `Ctrl+D` (delete, also asks `y/n`) work
+in both modes.
 
 Switching to another request and back doesn't lose anything: unsaved edits
 and the last response/error are kept in memory per request for the rest of
@@ -108,9 +175,10 @@ losing and regaining focus in between.
 
 ### Body Type (Raw / Form Data / Binary)
 
-A small selector sits above the Body pane — navigate to it (just below
-Headers), `h`/`l` to cycle, like Method. It changes what the Body pane below
-it is and does:
+The body type lives inside the Body pane itself (its title shows
+`Raw [Form Data] Binary`, active one bracketed). Focus the Body pane (just
+below Headers) *without* entering it, then press `[` / `]` to cycle to the
+previous / next type. It changes what the Body pane is and does:
 
 - **Raw** — the vim buffer described above. Free-form text, usually JSON.
 - **Form Data** (`multipart/form-data`) — a list, just like Headers:
