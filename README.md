@@ -156,9 +156,19 @@ name, URL — and `Enter` opens that request.
 (`src/state/undo.rs`) that exposes the undo/redo stacks so they can be
 saved; see the note at the top of `vendor/edtui/Cargo.toml`.
 
-(One edge case: if a request is still in flight when you
-switch away, its response lands wherever `current` is when it arrives, not
-necessarily back on the request that sent it.)
+### Response history (`[` / `]` in the Response pane)
+Every response (or failure) is kept per request in `responses.jsonl` — the
+last 30 per request, 1000 overall, bodies over 2 MB cut (marked "body
+truncated"). Only the response is stored, not the request's inputs. With the
+Response pane focused (Navigate mode, i.e. not inside the vim buffer), `[`
+steps to an older response and `]` back towards the latest; the title shows
+`Response 3/7 · time · status`, and the border turns yellow while you're
+looking at a past response. This only changes what the Response pane shows —
+none of the request's inputs change. Sending again jumps back to the latest.
+
+A response always lands on the request that sent it: if you switch tabs while
+a request is in flight, the response is stored on the original request (and
+shown when you switch back), not on whatever is open when it arrives.
 
 ### Method
 `h`/`l` or `←`/`→` — cycle HTTP method.

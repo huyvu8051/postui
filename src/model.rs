@@ -298,6 +298,21 @@ pub struct HistoryEntry {
     pub duration_ms: Option<u128>,
 }
 
+/// One past response (or failure) of a request, for browsing with `[` / `]` in the
+/// Response pane. Stored one per line in responses.jsonl.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseRecord {
+    pub request_id: Uuid,
+    pub timestamp: chrono::DateTime<chrono::Local>,
+    #[serde(default)]
+    pub response: Option<ResponseData>,
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Body was cut to the size limit before storing.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseData {
     pub status: u16,

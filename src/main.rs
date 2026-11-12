@@ -35,7 +35,8 @@ use model::ResponseData;
 enum AppEvent {
     Key(crossterm::event::KeyEvent),
     Paste(String),
-    Response(Result<ResponseData, String>),
+    /// A finished send, tagged with the request as it was when sent.
+    Response { sent: model::RequestItem, result: Result<ResponseData, String> },
     /// Idle heartbeat from the input thread (~10/s), used for debounced autosave.
     Tick,
 }
@@ -46,6 +47,7 @@ async fn main() -> Result<()> {
     let mut app = App::new(workspace);
     app.prune_tabs();
     app.history = storage::load_history();
+    app.load_response_history(storage::load_responses());
     app.restore_session(storage::load_session());
     app.refresh_response_view();
 
@@ -142,16 +144,19 @@ async fn run(
                 Action::None => {}
             },
             AppEvent::Paste(text) => event::handle_paste(app, text),
-            AppEvent::Response(result) => {
+            AppEvent::Response { sent, result } => {
                 app.loading = false;
-                match result {
-                    Ok(resp) => {
-                        app.push_history(Some(resp.status), Some(resp.duration_ms));
+                let (response, error) = match result {
+                    Ok(resp) => (Some(resp), None),
+                    Err(e) => (None, Some(e)),
+                };
+                app.push_history(&sent, response.as_ref().map(|r| r.status), response.as_ref().map(|r| r.duration_ms));
+                match (&response, &error) {
+                    (Some(resp), _) => {
                         app.status_message = "Request completed".into();
-                        if !app.current.post_response_script.trim().is_empty() {
+                        if !sent.post_response_script.trim().is_empty() {
                             let mut env = app.active_environment().cloned();
-                            let outcome =
-                                script::run_post_response(&app.current.post_response_script, &resp, &mut env);
+                            let outcome = script::run_post_response(&sent.post_response_script, resp, &mut env);
                             app.push_script_log(outcome.logs);
                             app.replace_environment_matching_id(env);
                             if let Some(err) = outcome.error {
@@ -159,21 +164,17 @@ async fn run(
                                     format!("Request completed, but post-response script failed: {err}");
                             }
                         }
-                        app.response = Some(resp);
-                        app.last_error = None;
                     }
-                    Err(e) => {
-                        app.push_history(None, None);
-                        app.response = None;
-                        logger::log("request failed", &e);
+                    (None, Some(e)) => {
+                        logger::log("request failed", e);
                         app.status_message = format!(
                             "Request failed — see Response pane (also logged to {})",
                             logger::path_hint()
                         );
-                        app.last_error = Some(e);
                     }
+                    (None, None) => {}
                 }
-                app.refresh_response_view();
+                app.deliver_response(&sent, response, error);
             }
         }
         if app.should_quit {
@@ -192,6 +193,7 @@ fn trigger_send(app: &mut App, tx: mpsc::UnboundedSender<AppEvent>) {
         return;
     }
 
+    let sent = app.current.clone();
     let mut req = app.current.clone();
     let mut env = app.active_environment().cloned();
     if !req.pre_request_script.trim().is_empty() {
@@ -213,7 +215,7 @@ fn trigger_send(app: &mut App, tx: mpsc::UnboundedSender<AppEvent>) {
         let result = http::send_request(&req, env.as_ref())
             .await
             .map_err(full_cause_chain);
-        let _ = tx.send(AppEvent::Response(result));
+        let _ = tx.send(AppEvent::Response { sent, result });
     });
 }
 

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::model::{HistoryEntry, Workspace};
+use crate::model::{HistoryEntry, ResponseRecord, Workspace};
 use crate::session::StoredSession;
 
 fn data_dir() -> Result<PathBuf> {
@@ -86,4 +86,54 @@ pub fn load_history() -> Vec<HistoryEntry> {
 
 pub fn save_history(history: &[HistoryEntry]) -> Result<()> {
     save_side("history.json", &history)
+}
+
+const RESPONSES_FILE: &str = "responses.jsonl";
+
+/// All stored responses, oldest first. Unreadable lines are skipped (and logged).
+pub fn load_responses() -> Vec<ResponseRecord> {
+    let Ok(path) = data_dir().map(|d| d.join(RESPONSES_FILE)) else {
+        return Vec::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut bad = 0;
+    let records = contents
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).map_err(|_| bad += 1).ok())
+        .collect();
+    if bad > 0 {
+        crate::logger::log("responses load", &format!("skipped {bad} unreadable line(s) in {}", path.display()));
+    }
+    records
+}
+
+/// Append one record — cheap even when the file is large.
+pub fn append_response(record: &ResponseRecord) -> Result<()> {
+    use std::io::Write;
+    let path = data_dir()?.join(RESPONSES_FILE);
+    let mut line = serde_json::to_string(record).context("failed to serialize response")?;
+    line.push('\n');
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .with_context(|| format!("failed to append to {}", path.display()))
+}
+
+/// Rewrite the whole file (used to drop old records at startup).
+pub fn rewrite_responses(records: &[ResponseRecord]) -> Result<()> {
+    let path = data_dir()?.join(RESPONSES_FILE);
+    let tmp = path.with_extension("jsonl.tmp");
+    let mut out = String::new();
+    for r in records {
+        out.push_str(&serde_json::to_string(r).context("failed to serialize response")?);
+        out.push('\n');
+    }
+    std::fs::write(&tmp, out).with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("failed to replace {}", path.display()))?;
+    Ok(())
 }

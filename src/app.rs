@@ -6,7 +6,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use uuid::Uuid;
 
-use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, Workspace};
+use crate::model::{Environment, FormField, Header, HistoryEntry, RequestItem, ResponseData, ResponseRecord, Workspace};
 use crate::session::{EditorBuffers, StoredDraft, StoredSession};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +191,9 @@ pub struct RequestDraft {
 }
 
 const HISTORY_LIMIT: usize = 500;
+const RESPONSES_PER_REQUEST: usize = 30;
+const RESPONSES_TOTAL: usize = 1000;
+const RESPONSE_BODY_LIMIT: usize = 2 * 1024 * 1024;
 /// Autosave drafts this long after the last change…
 const SESSION_SAVE_IDLE: Duration = Duration::from_secs(1);
 /// …or at the latest this long after the first unsaved change, even while typing.
@@ -242,6 +245,10 @@ pub struct App {
 
     pub response_state: EditorState,
     pub response_is_json: bool,
+    /// Past responses per request, oldest first.
+    pub response_history: HashMap<Uuid, Vec<ResponseRecord>>,
+    /// Which past response the Response pane shows; None = the latest.
+    pub response_view: Option<usize>,
 
     pub loading: bool,
     pub status_message: String,
@@ -297,6 +304,8 @@ impl App {
             last_error: None,
             response_state: EditorState::default(),
             response_is_json: false,
+            response_history: HashMap::new(),
+            response_view: None,
             loading: false,
             status_message: String::from(
                 "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | e: environments | q: quit",
@@ -537,6 +546,7 @@ impl App {
         }
         self.current.sync_path_params();
         self.source = Some(RequestSource { collection_index: coll_idx, request_index: req_idx });
+        self.response_view = None;
         self.header_index = 0;
         self.form_field_index = 0;
         self.path_param_index = 0;
@@ -650,7 +660,15 @@ impl App {
     }
 
     pub fn refresh_response_view(&mut self) {
-        let text = match (&self.response, &self.last_error) {
+        let past = self
+            .response_view
+            .and_then(|i| self.response_history.get(&self.current.id)?.get(i))
+            .map(|r| (r.response.clone(), r.error.clone()));
+        let (response, last_error) = match past {
+            Some(p) => p,
+            None => (self.response.clone(), self.last_error.clone()),
+        };
+        let text = match (&response, &last_error) {
             (Some(resp), _) => {
                 let mut out = String::new();
                 for (k, v) in &resp.headers {
@@ -694,13 +712,13 @@ impl App {
         }
     }
 
-    pub fn push_history(&mut self, status: Option<u16>, duration_ms: Option<u128>) {
+    pub fn push_history(&mut self, sent: &RequestItem, status: Option<u16>, duration_ms: Option<u128>) {
         self.history.push(HistoryEntry {
             timestamp: chrono::Local::now(),
-            request_id: self.source.map(|_| self.current.id),
-            name: self.current.name.clone(),
-            method: self.current.method,
-            url: self.current.url.clone(),
+            request_id: self.find_request(sent.id).map(|_| sent.id),
+            name: sent.name.clone(),
+            method: sent.method,
+            url: sent.url.clone(),
             status,
             duration_ms,
         });
@@ -709,6 +727,128 @@ impl App {
         if let Err(e) = crate::storage::save_history(&self.history) {
             crate::logger::log("history save failed", &format!("{e:#}"));
         }
+    }
+
+    /// Load responses.jsonl, dropping records of deleted requests and anything past
+    /// the per-request / total limits (the file is rewritten only if something was dropped).
+    pub fn load_response_history(&mut self, records: Vec<ResponseRecord>) {
+        let loaded = records.len();
+        let mut kept: Vec<ResponseRecord> = records
+            .into_iter()
+            .filter(|r| self.find_request(r.request_id).is_some())
+            .collect();
+        // Per request: keep the newest N.
+        let mut per: HashMap<Uuid, usize> = HashMap::new();
+        for r in kept.iter().rev() {
+            *per.entry(r.request_id).or_default() += 1;
+        }
+        let mut seen: HashMap<Uuid, usize> = HashMap::new();
+        kept.retain(|r| {
+            let n = seen.entry(r.request_id).or_default();
+            *n += 1;
+            per[&r.request_id] - *n < RESPONSES_PER_REQUEST
+        });
+        // Overall: keep the newest N.
+        let excess = kept.len().saturating_sub(RESPONSES_TOTAL);
+        kept.drain(0..excess);
+        if kept.len() != loaded {
+            if let Err(e) = crate::storage::rewrite_responses(&kept) {
+                crate::logger::log("responses compact failed", &format!("{e:#}"));
+            }
+        }
+        self.response_history.clear();
+        for r in kept {
+            self.response_history.entry(r.request_id).or_default().push(r);
+        }
+    }
+
+    fn record_response(&mut self, request_id: Uuid, response: Option<&ResponseData>, error: Option<&str>) {
+        let mut truncated = false;
+        let response = response.map(|r| {
+            let mut r = r.clone();
+            if r.body.len() > RESPONSE_BODY_LIMIT {
+                let mut cut = RESPONSE_BODY_LIMIT;
+                while !r.body.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                r.body.truncate(cut);
+                truncated = true;
+            }
+            r
+        });
+        let record = ResponseRecord {
+            request_id,
+            timestamp: chrono::Local::now(),
+            response,
+            error: error.map(str::to_string),
+            truncated,
+        };
+        if let Err(e) = crate::storage::append_response(&record) {
+            crate::logger::log("response history save failed", &format!("{e:#}"));
+        }
+        let list = self.response_history.entry(request_id).or_default();
+        list.push(record);
+        let excess = list.len().saturating_sub(RESPONSES_PER_REQUEST);
+        list.drain(0..excess);
+    }
+
+    /// A finished send. It lands on the request that was sent — which may no longer
+    /// be the one on screen if the user switched tabs while it was in flight.
+    pub fn deliver_response(&mut self, sent: &RequestItem, response: Option<ResponseData>, error: Option<String>) {
+        self.record_response(sent.id, response.as_ref(), error.as_deref());
+        if self.current.id == sent.id {
+            self.response = response;
+            self.last_error = error;
+            self.response_view = None;
+            self.refresh_response_view();
+            return;
+        }
+        if !self.drafts.contains_key(&sent.id) {
+            let Some((ci, ri)) = self.find_request(sent.id) else {
+                return;
+            };
+            let mut item = self.workspace.collections[ci].requests[ri].clone();
+            item.sync_path_params();
+            let buffers = EditorBuffers::from_item(&item);
+            self.drafts.insert(sent.id, RequestDraft { item, response: None, last_error: None, buffers });
+        }
+        if let Some(draft) = self.drafts.get_mut(&sent.id) {
+            draft.response = response;
+            draft.last_error = error;
+        }
+        self.status_message = format!("Response for '{}' arrived — switch to its tab to see it", sent.name);
+    }
+
+    /// `[` / `]` in the Response pane: step to an older / newer past response.
+    pub fn step_response_history(&mut self, older: bool) {
+        let n = self.response_history.get(&self.current.id).map_or(0, Vec::len);
+        if n == 0 {
+            self.status_message = "No response history for this request yet".into();
+            return;
+        }
+        let pos = self.response_view.unwrap_or(n - 1);
+        let next = if older {
+            if pos == 0 {
+                self.status_message = "Already at the oldest response".into();
+                return;
+            }
+            pos - 1
+        } else {
+            if pos + 1 >= n {
+                self.status_message = "Already at the latest response".into();
+                return;
+            }
+            pos + 1
+        };
+        self.response_view = if next + 1 == n { None } else { Some(next) };
+        self.refresh_response_view();
+    }
+
+    /// (position 1-based, total, the record shown) for the Response pane title.
+    pub fn response_history_position(&self) -> Option<(usize, usize, &ResponseRecord)> {
+        let list = self.response_history.get(&self.current.id)?;
+        let i = self.response_view.unwrap_or(list.len().checked_sub(1)?);
+        Some((i + 1, list.len(), list.get(i)?))
     }
 
     pub fn mark_session_changed(&mut self) {
@@ -801,24 +941,83 @@ mod tests {
     }
 
     /// Everything that touches disk goes to a throwaway HOME, never the real workspace.
-    #[test]
-    fn unsaved_edits_and_undo_survive_tab_switch_and_restart() {
-        let home = std::env::temp_dir().join(format!("postui-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&home).unwrap();
-        // SAFETY: the only test in this binary that reads HOME / touches storage.
-        unsafe { std::env::set_var("HOME", &home) };
-        assert!(dirs::data_dir().unwrap().starts_with(&home));
+    /// Tests holding the returned guard run one at a time and start with empty storage.
+    fn isolated_storage() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = HOME.get_or_init(|| {
+            let home = std::env::temp_dir().join(format!("postui-test-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&home).unwrap();
+            // SAFETY: set once, before any test reads storage paths (all go through this lock).
+            unsafe { std::env::set_var("HOME", &home) };
+            home
+        });
+        let data = dirs::data_dir().unwrap();
+        assert!(data.starts_with(home), "storage must point at the temp HOME");
+        let _ = std::fs::remove_dir_all(data.join("postui"));
+        guard
+    }
 
+    fn two_request_workspace() -> (Workspace, Uuid, Uuid) {
         let mut ws = Workspace::default();
         let mut c = Collection::new("c");
         let mut a = RequestItem::new("a");
         a.body = "x".into();
         c.requests.push(a);
         c.requests.push(RequestItem::new("b"));
-        let (a_id, b_id) = (c.requests[0].id, c.requests[1].id);
+        let ids = (c.requests[0].id, c.requests[1].id);
         ws.collections.push(c);
+        (ws, ids.0, ids.1)
+    }
 
-        let mut app = App::new(ws.clone());
+    fn resp(status: u16) -> ResponseData {
+        ResponseData { status, headers: vec![], body: format!("body {status}"), duration_ms: 5 }
+    }
+
+    #[test]
+    fn response_history_follows_the_sent_request_and_steps_back() {
+        let _storage = isolated_storage();
+        let (ws, a_id, b_id) = two_request_workspace();
+        let mut app = App::new(ws);
+        app.load_request(0, 0);
+        let sent_a = app.current.clone();
+
+        app.deliver_response(&sent_a, Some(resp(200)), None);
+        app.deliver_response(&sent_a, Some(resp(201)), None);
+        assert_eq!(app.response.as_ref().unwrap().status, 201);
+
+        // `[` goes back to the first response, `]` returns to the latest.
+        app.step_response_history(true);
+        assert_eq!(app.response_history_position().unwrap().0, 1);
+        assert!(app.response_state.lines.to_string().contains("body 200"));
+        app.step_response_history(false);
+        assert_eq!(app.response_view, None);
+        assert!(app.response_state.lines.to_string().contains("body 201"));
+
+        // A response arriving after switching tabs lands on the request that was sent.
+        app.load_request(0, 1);
+        app.deliver_response(&sent_a, Some(resp(500)), None);
+        assert!(app.response.is_none(), "b's pane is untouched");
+        assert_eq!(app.drafts[&a_id].response.as_ref().unwrap().status, 500);
+        assert!(app.response_history.get(&b_id).is_none());
+
+        // Reload from disk with the per-request cap applied.
+        for _ in 0..RESPONSES_PER_REQUEST {
+            app.deliver_response(&sent_a, Some(resp(204)), None);
+        }
+        let mut app2 = App::new(app.workspace.clone());
+        app2.load_response_history(crate::storage::load_responses());
+        assert_eq!(app2.response_history[&a_id].len(), RESPONSES_PER_REQUEST);
+        assert!(crate::storage::load_responses().len() == RESPONSES_PER_REQUEST, "file compacted");
+    }
+
+    #[test]
+    fn unsaved_edits_and_undo_survive_tab_switch_and_restart() {
+        let _storage = isolated_storage();
+
+        let (ws, a_id, b_id) = two_request_workspace();
+        let mut app = App::new(ws);
         app.load_request(0, 0);
         press(&mut app, KeyCode::Char('A'), KeyModifiers::SHIFT);
         for ch in "yz".chars() {
@@ -849,7 +1048,5 @@ mod tests {
         app2.save_all();
         assert!(!app2.is_dirty(a_id));
         assert_eq!(app2.workspace.collections[0].requests[0].body, "xyz");
-
-        let _ = std::fs::remove_dir_all(&home);
     }
 }

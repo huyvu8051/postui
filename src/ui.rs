@@ -644,22 +644,47 @@ fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_response(f: &mut Frame, app: &mut App, area: Rect) {
-    let title = if app.loading {
+    let viewing_past = app.response_view.is_some();
+    let hist = app.response_history_position();
+    let counter = match hist {
+        Some((pos, total, _)) if total > 1 => format!(" {pos}/{total}"),
+        _ => String::new(),
+    };
+    let hint = if hist.is_some_and(|(_, total, _)| total > 1) { "[ ]: older/newer, " } else { "" };
+    let title = if viewing_past {
+        let (_, _, rec) = hist.expect("response_view implies a record");
+        let what = match (&rec.response, &rec.error) {
+            (Some(r), _) => format!("{} ({} ms)", r.status, r.duration_ms),
+            _ => "request failed".to_string(),
+        };
+        let cut = if rec.truncated { " · body truncated" } else { "" };
+        format!(
+            " Response{counter} · {} · {what}{cut} — PAST RESPONSE — {hint}hjkl gg/G /search v y ",
+            rec.timestamp.format("%m-%d %H:%M:%S")
+        )
+    } else if app.loading {
         " Response (sending...) ".to_string()
     } else if app.last_error.is_some() {
-        " Response — request failed ".to_string()
+        format!(" Response{counter} — request failed — {hint}")
     } else if let Some(r) = &app.response {
         let kind = if app.response_is_json { ", JSON" } else { "" };
         format!(
-            " Response — {} ({} ms{kind}) — hjkl gg/G /search v y F4 ",
+            " Response{counter} — {} ({} ms{kind}) — {hint}hjkl gg/G /search v y F4 ",
             r.status, r.duration_ms
         )
     } else {
         " Response ".to_string()
     };
 
-    let border_color = if app.last_error.is_some() {
+    let failed = if viewing_past {
+        hist.is_some_and(|(_, _, rec)| rec.response.is_none())
+    } else {
+        app.last_error.is_some()
+    };
+    let border_color = if failed {
         Color::Red
+    } else if viewing_past {
+        Color::Yellow
     } else {
         panel_color(app, Focus::Response).unwrap_or(Color::DarkGray)
     };

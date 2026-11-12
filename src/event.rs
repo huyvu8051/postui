@@ -144,6 +144,8 @@ fn handle_navigate_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(']') if app.focus == Focus::Body => cycle_body_mode(app, true),
         KeyCode::Char('[') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.prev(),
         KeyCode::Char(']') if app.focus == Focus::ScriptEditor => app.script_tab = app.script_tab.next(),
+        KeyCode::Char('[') if app.focus == Focus::Response => app.step_response_history(true),
+        KeyCode::Char(']') if app.focus == Focus::Response => app.step_response_history(false),
         _ => {}
     }
 }
@@ -1073,6 +1075,7 @@ fn delete_collection_finder_selection(app: &mut App, entry: Option<SidebarEntry>
         Some(SidebarEntry::Collection(ci)) => {
             for r in &app.workspace.collections[ci].requests {
                 app.drafts.remove(&r.id);
+                app.response_history.remove(&r.id);
             }
             app.workspace.collections.remove(ci);
             app.persist();
@@ -1080,6 +1083,7 @@ fn delete_collection_finder_selection(app: &mut App, entry: Option<SidebarEntry>
         Some(SidebarEntry::Request(ci, ri)) => {
             let removed = app.workspace.collections[ci].requests.remove(ri);
             app.drafts.remove(&removed.id);
+            app.response_history.remove(&removed.id);
             if app.source == Some(RequestSource { collection_index: ci, request_index: ri }) {
                 app.source = None;
             }
