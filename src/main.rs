@@ -45,6 +45,8 @@ enum AppEvent {
     /// A finished send, tagged with the request as it was when sent.
     Response {
         sent: model::RequestItem,
+        /// Exactly what went on the wire (None if the request couldn't be built).
+        actual: Option<model::ActualRequest>,
         result: Result<ResponseData, String>,
     },
     /// Idle heartbeat from the input thread (~10/s), used for debounced autosave.
@@ -179,7 +181,12 @@ async fn run(
                 Action::None => {}
             },
             AppEvent::Paste(text) => event::handle_paste(app, text),
-            AppEvent::Response { sent, result } => {
+            AppEvent::Response {
+                sent,
+                actual,
+                result,
+            } => {
+                app.record_actual(sent.id, actual);
                 let (response, error) = match result {
                     Ok(resp) => (Some(resp), None),
                     Err(e) => (None, Some(e)),
@@ -258,10 +265,12 @@ fn trigger_send(app: &mut App, tx: mpsc::UnboundedSender<AppEvent>) {
     app.begin_send(sent.id);
     app.status_message = format!("Sending '{}'...", sent.name);
     tokio::spawn(async move {
-        let result = http::send_request(&req, env.as_ref())
-            .await
-            .map_err(full_cause_chain);
-        let _ = tx.send(AppEvent::Response { sent, result });
+        let outcome = http::send_request(&req, env.as_ref()).await;
+        let _ = tx.send(AppEvent::Response {
+            sent,
+            actual: outcome.actual,
+            result: outcome.result.map_err(full_cause_chain),
+        });
     });
 }
 

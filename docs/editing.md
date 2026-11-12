@@ -11,13 +11,15 @@
 │      │ │                       ││                               │
 │      │ │                       │├ Console ──────────────────────┤
 │      │ └───────────────────────┘└───────────────────────────────┘
-│      │ ┌ Body ─────────────────┐┌ Response ─────────────────────┐
+│      │ ┌ Body ─────────────────┐┌ Actual request (opt) ─────────┐
+│      │ │                       │├ Response ─────────────────────┤
 │      │ │                       ││                               │
 └──────┘ └───────────────────────┘└───────────────────────────────┘
  status line
 ```
 
-The tabs sidebar is hidden until you press `space t`. `F3` / `space z`
+The tabs sidebar is hidden until you press `space t`, and the Actual request
+pane until you press `space a`. `F3` / `space z`
 maximizes the focused pane.
 
 ## Navigate and Interact

@@ -2,9 +2,28 @@ use anyhow::{Context, Result};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
-use crate::model::{BodyMode, Environment, FormValue, RequestItem, ResponseData};
+use crate::model::{
+    ActualBody, ActualRequest, BodyMode, Environment, FormValue, RequestItem, ResponseData,
+};
 
-pub async fn send_request(req: &RequestItem, env: Option<&Environment>) -> Result<ResponseData> {
+/// The result of a send: exactly what was put on the wire (when the request got as
+/// far as being built), and the response or error.
+pub struct SendOutcome {
+    pub actual: Option<ActualRequest>,
+    pub result: Result<ResponseData>,
+}
+
+pub async fn send_request(req: &RequestItem, env: Option<&Environment>) -> SendOutcome {
+    let mut actual = None;
+    let result = send(req, env, &mut actual).await;
+    SendOutcome { actual, result }
+}
+
+async fn send(
+    req: &RequestItem,
+    env: Option<&Environment>,
+    actual: &mut Option<ActualRequest>,
+) -> Result<ResponseData> {
     let resolve = |s: &str| -> String {
         match env {
             Some(e) => e.resolve(s),
@@ -32,11 +51,13 @@ pub async fn send_request(req: &RequestItem, env: Option<&Environment>) -> Resul
         }
     }
 
-    builder = apply_body(builder, req, &resolve).await?;
+    let (builder, body) = apply_body(builder, req, &resolve).await?;
+    let request = builder.build().context("failed to build the request")?;
+    *actual = Some(describe(&request, body, env));
 
     let start = Instant::now();
-    let resp = builder
-        .send()
+    let resp = client
+        .execute(request)
         .await
         .with_context(|| format!("{} {url} failed", req.method.as_str()))?;
     let status = resp.status().as_u16();
@@ -133,28 +154,83 @@ async fn new_body_file() -> Result<(tokio::fs::File, std::path::PathBuf)> {
     Ok((file, path))
 }
 
+/// Snapshot of a built request: its own headers, plus the ones the client adds when
+/// sending — reqwest's default `Accept: */*` (if not set), and `Host` /
+/// `Content-Length` from the HTTP layer.
+fn describe(
+    request: &reqwest::Request,
+    body: ActualBody,
+    env: Option<&Environment>,
+) -> ActualRequest {
+    let headers: Vec<(String, String)> = request
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+    let mut client_headers = Vec::new();
+    if !has("accept") {
+        client_headers.push(("accept".to_string(), "*/*".to_string()));
+    }
+    if !has("host")
+        && let Some(host) = request.url().host_str()
+    {
+        let host = match request.url().port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        client_headers.push(("host".to_string(), host));
+    }
+    if !has("content-length")
+        && let Some(len) = request.body().and_then(|b| b.as_bytes()).map(<[u8]>::len)
+    {
+        client_headers.push(("content-length".to_string(), len.to_string()));
+    }
+    ActualRequest {
+        at: chrono::Local::now(),
+        method: request.method().to_string(),
+        url: request.url().to_string(),
+        headers,
+        client_headers,
+        body,
+        environment: env.map(|e| e.name.clone()),
+    }
+}
+
+/// Attach the body for the request's body mode, and describe it for `describe`.
 async fn apply_body(
     builder: reqwest::RequestBuilder,
     req: &RequestItem,
     resolve: &impl Fn(&str) -> String,
-) -> Result<reqwest::RequestBuilder> {
+) -> Result<(reqwest::RequestBuilder, ActualBody)> {
     match req.body_mode {
         BodyMode::Raw => {
             if req.body.is_empty() {
-                Ok(builder)
+                Ok((builder, ActualBody::None))
             } else {
-                Ok(builder.body(resolve(&req.body)))
+                let body = resolve(&req.body);
+                Ok((builder.body(body.clone()), ActualBody::Text(body)))
             }
         }
         BodyMode::FormData => {
             let mut form = reqwest::multipart::Form::new();
+            let mut parts = Vec::new();
             for field in &req.form_fields {
                 if !field.enabled || field.key.is_empty() {
                     continue;
                 }
                 let key = resolve(&field.key);
                 form = match &field.value {
-                    FormValue::Text(v) => form.text(key, resolve(v)),
+                    FormValue::Text(v) => {
+                        let value = resolve(v);
+                        parts.push(format!("{key} = {value}"));
+                        form.text(key, value)
+                    }
                     FormValue::File(path) => {
                         let path = resolve(path);
                         let bytes = tokio::fs::read(&path).await.with_context(|| {
@@ -164,6 +240,10 @@ async fn apply_body(
                             .file_name()
                             .map(|s| s.to_string_lossy().into_owned())
                             .unwrap_or_else(|| "file".to_string());
+                        parts.push(format!(
+                            "{key} = @{path} ({} bytes, filename \"{file_name}\")",
+                            bytes.len()
+                        ));
                         form.part(
                             key,
                             reqwest::multipart::Part::bytes(bytes).file_name(file_name),
@@ -171,17 +251,18 @@ async fn apply_body(
                     }
                 };
             }
-            Ok(builder.multipart(form))
+            Ok((builder.multipart(form), ActualBody::Multipart(parts)))
         }
         BodyMode::Binary => {
             if req.binary_file.is_empty() {
-                Ok(builder)
+                Ok((builder, ActualBody::None))
             } else {
                 let path = resolve(&req.binary_file);
                 let bytes = tokio::fs::read(&path)
                     .await
                     .with_context(|| format!("failed to read binary file '{path}'"))?;
-                Ok(builder.body(bytes))
+                let size = bytes.len() as u64;
+                Ok((builder.body(bytes), ActualBody::File { path, size }))
             }
         }
     }
@@ -229,7 +310,7 @@ mod tests {
             bytes.clone(),
         )
         .await;
-        let resp = send_request(&get(url), None).await.unwrap();
+        let resp = send_request(&get(url), None).await.result.unwrap();
         assert!(resp.binary && resp.body.is_empty());
         assert_eq!(resp.size, bytes.len() as u64);
         assert_eq!(std::fs::read(resp.body_file.unwrap()).unwrap(), bytes);
@@ -239,7 +320,7 @@ mod tests {
     async fn text_that_is_not_utf8_falls_back_to_binary() {
         let _storage = crate::test_support::isolated_storage();
         let url = serve_once("text/plain", "", vec![b'o', b'k', 0xff, 0xfe]).await;
-        let resp = send_request(&get(url), None).await.unwrap();
+        let resp = send_request(&get(url), None).await.result.unwrap();
         assert!(resp.binary);
         assert_eq!(
             std::fs::read(resp.body_file.unwrap()).unwrap(),
@@ -251,8 +332,84 @@ mod tests {
     async fn json_stays_text_in_memory() {
         let _storage = crate::test_support::isolated_storage();
         let url = serve_once("application/json", "", br#"{"ok":true}"#.to_vec()).await;
-        let resp = send_request(&get(url), None).await.unwrap();
+        let resp = send_request(&get(url), None).await.result.unwrap();
         assert!(!resp.binary && resp.body_file.is_none());
         assert_eq!(resp.body, r#"{"ok":true}"#);
+    }
+
+    #[tokio::test]
+    async fn actual_request_shows_what_went_on_the_wire() {
+        let _storage = crate::test_support::isolated_storage();
+        let url = serve_once("application/json", "", b"{}".to_vec()).await; // http://127.0.0.1:PORT/file
+        let base = url.trim_end_matches("/file").to_string();
+        let mut env = Environment::new("dev");
+        env.variables.push(("base".into(), base.clone()));
+        env.variables.push(("token".into(), "s3cret".into()));
+        let mut req = RequestItem::new("t");
+        req.method = crate::model::Method::Post;
+        req.url = "{{base}}/:id".into();
+        req.path_params = vec![("id".into(), "file".into())];
+        req.headers.push(crate::model::Header::new(
+            "Authorization",
+            "Bearer {{token}}",
+        ));
+        req.body = r#"{"who":"{{token}}"}"#.into();
+
+        let outcome = send_request(&req, Some(&env)).await;
+        assert!(outcome.result.is_ok());
+        let actual = outcome.actual.expect("snapshot");
+        assert_eq!(actual.method, "POST");
+        assert_eq!(
+            actual.url,
+            format!("{base}/file"),
+            "variables and path params resolved"
+        );
+        assert!(
+            actual
+                .headers
+                .iter()
+                .any(|(k, v)| k == "authorization" && v == "Bearer s3cret")
+        );
+        let client: Vec<&str> = actual
+            .client_headers
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(client, vec!["accept", "host", "content-length"]);
+        assert!(matches!(&actual.body, ActualBody::Text(b) if b == r#"{"who":"s3cret"}"#));
+        assert_eq!(actual.environment.as_deref(), Some("dev"));
+        let text = actual.to_text();
+        assert!(text.starts_with(&format!("POST {base}/file\n")));
+        assert!(text.contains("accept: */*    ← added by the HTTP client"));
+    }
+
+    #[tokio::test]
+    async fn multipart_parts_and_failed_sends_are_described() {
+        let _storage = crate::test_support::isolated_storage();
+        // A port with nothing listening: the send fails, but the request was built.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut req = get(format!("http://127.0.0.1:{port}/upload"));
+        req.method = crate::model::Method::Post;
+        req.body_mode = BodyMode::FormData;
+        req.form_fields
+            .push(crate::model::FormField::new_text("note", "hello"));
+
+        let outcome = send_request(&req, None).await;
+        assert!(outcome.result.is_err(), "nothing is listening");
+        let actual = outcome
+            .actual
+            .expect("built before sending, so still described");
+        assert!(
+            actual.headers.iter().any(
+                |(k, v)| k == "content-type" && v.starts_with("multipart/form-data; boundary=")
+            )
+        );
+        assert!(
+            matches!(&actual.body, ActualBody::Multipart(parts) if parts == &vec!["note = hello".to_string()])
+        );
     }
 }

@@ -319,6 +319,74 @@ pub struct ResponseRecord {
     pub truncated: bool,
 }
 
+/// Exactly what a send put on the wire, after `{{variable}}` substitution, path
+/// params and the pre-request script — shown in the Actual request pane (`space a`).
+#[derive(Debug, Clone)]
+pub struct ActualRequest {
+    pub at: chrono::DateTime<chrono::Local>,
+    pub method: String,
+    pub url: String,
+    /// Headers set on the request (yours, plus Content-Type for form data).
+    pub headers: Vec<(String, String)>,
+    /// Headers the HTTP client adds when sending (Accept, Host, Content-Length).
+    pub client_headers: Vec<(String, String)>,
+    pub body: ActualBody,
+    /// Active environment at send time, if any.
+    pub environment: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ActualBody {
+    None,
+    Text(String),
+    /// multipart/form-data, one line per part.
+    Multipart(Vec<String>),
+    /// Binary body: a file's bytes.
+    File {
+        path: String,
+        size: u64,
+    },
+}
+
+impl ActualRequest {
+    /// Plain-text rendering, roughly like an HTTP/1.1 request on the wire.
+    pub fn to_text(&self) -> String {
+        let mut out = format!("{} {}\n", self.method, self.url);
+        for (k, v) in &self.headers {
+            out.push_str(&format!("{k}: {v}\n"));
+        }
+        for (k, v) in &self.client_headers {
+            out.push_str(&format!("{k}: {v}    ← added by the HTTP client\n"));
+        }
+        out.push('\n');
+        match &self.body {
+            ActualBody::None => out.push_str("(no body)\n"),
+            ActualBody::Text(text) => {
+                out.push_str(text);
+                out.push('\n');
+            }
+            ActualBody::Multipart(parts) => {
+                out.push_str("multipart/form-data parts:\n");
+                for part in parts {
+                    out.push_str(&format!("  {part}\n"));
+                }
+            }
+            ActualBody::File { path, size } => {
+                out.push_str(&format!("(binary body: {size} bytes from {path})\n"));
+            }
+        }
+        out.push_str(&format!(
+            "\n── sent {}{} ──\n",
+            self.at.format("%Y-%m-%d %H:%M:%S"),
+            self.environment
+                .as_ref()
+                .map(|e| format!(" · environment: {e}"))
+                .unwrap_or_default()
+        ));
+        out
+    }
+}
+
 /// What the app keeps in memory about a past response. The body stays on disk in
 /// responses.jsonl and is read (via `offset`) only when it's viewed.
 #[derive(Debug, Clone)]

@@ -36,6 +36,7 @@ pane **and enter it**; vim buffers open in Normal mode.
 | `space s` | Script editor |
 | `space c` | Script console |
 | `space r` | Response |
+| `space a` | Show the Actual request pane (what was really sent) and enter it; again (while in it) to hide it |
 | `space t` | Show the tabs sidebar and enter it; again (while in it) to hide it |
 | `space f` | Collection browser |
 | `space e` | Environment manager |

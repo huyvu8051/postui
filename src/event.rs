@@ -11,7 +11,7 @@ use crate::model::{BodyMode, Collection, Environment, FormField, FormValue, Head
 fn is_vim_editor_focus(app: &App) -> bool {
     matches!(
         app.focus,
-        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console
+        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console | Focus::Actual
     ) || (app.focus == Focus::Body && app.current.body_mode == BodyMode::Raw)
 }
 
@@ -176,7 +176,7 @@ fn handle_interact_key(app: &mut App, key: KeyEvent) {
         Focus::PathParams => handle_path_params_key(app, key),
         Focus::Headers => handle_headers_key(app, key),
         Focus::Body => handle_body_field_key(app, key),
-        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console => {
+        Focus::Url | Focus::Response | Focus::ScriptEditor | Focus::Console | Focus::Actual => {
             unreachable!("handled above")
         }
     }
@@ -194,6 +194,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> bool {
             match code {
                 KeyCode::Char('f') => open_collection_finder(app),
                 KeyCode::Char('t') => toggle_tabs_sidebar(app),
+                KeyCode::Char('a') => toggle_actual_pane(app),
                 KeyCode::Char('w') => app.save_current(),
                 KeyCode::Char('W') => app.save_all(),
                 KeyCode::Char('H') => app.popup = Popup::History { selected: 0 },
@@ -514,6 +515,7 @@ fn current_editor_mode(app: &App) -> EditorMode {
         Focus::Body => app.body_state.mode,
         Focus::Response => app.response_state.mode,
         Focus::Console => app.console_state.mode,
+        Focus::Actual => app.actual_state.mode,
         Focus::ScriptEditor => match app.script_tab {
             ScriptTab::Pre => app.pre_script_state.mode,
             ScriptTab::Post => app.post_script_state.mode,
@@ -544,7 +546,15 @@ fn handle_editor_pane_key(app: &mut App, key: KeyEvent) -> Action {
     }
 
     if app.focus == Focus::Console {
-        handle_console_key(app, key);
+        let mut state = std::mem::take(&mut app.console_state);
+        handle_read_only_key(app, &mut state, key, "Console");
+        app.console_state = state;
+        return Action::None;
+    }
+    if app.focus == Focus::Actual {
+        let mut state = std::mem::take(&mut app.actual_state);
+        handle_read_only_key(app, &mut state, key, "The actual request");
+        app.actual_state = state;
         return Action::None;
     }
 
@@ -585,11 +595,11 @@ fn feed_var_input(app: &mut App, key: KeyEvent) {
     app.var_menu = menu;
 }
 
-/// Console is read-only: vim motions/search/yank work, but any edit is reverted.
-fn handle_console_key(app: &mut App, key: KeyEvent) {
-    let before = app.console_state.lines.to_string();
-    app.editor_events.on_key_event(key, &mut app.console_state);
-    let state = &mut app.console_state;
+/// Read-only vim buffers (Console, Actual request): motions, search and yank work,
+/// but any edit is reverted.
+fn handle_read_only_key(app: &mut App, state: &mut edtui::EditorState, key: KeyEvent, what: &str) {
+    let before = state.lines.to_string();
+    app.editor_events.on_key_event(key, state);
     if state.mode == EditorMode::Insert {
         state.mode = EditorMode::Normal;
     }
@@ -602,8 +612,22 @@ fn handle_console_key(app: &mut App, key: KeyEvent) {
             .col
             .min(state.lines.len_col(row).unwrap_or(0).saturating_sub(1));
         state.cursor = edtui::Index2::new(row, col);
-        app.status_message = "Console is read-only".into();
+        app.status_message = format!("{what} is read-only");
     }
+}
+
+/// `space a`: show the Actual request pane and jump into it; pressed again while
+/// in it, hide it and go back to the Response.
+fn toggle_actual_pane(app: &mut App) {
+    if app.show_actual && app.focus == Focus::Actual {
+        app.show_actual = false;
+        app.focus = Focus::Response;
+        app.panel_mode = PanelMode::Navigate;
+        return;
+    }
+    app.show_actual = true;
+    app.refresh_actual_view();
+    jump_into(app, Focus::Actual);
 }
 
 fn format_body(app: &mut App) {
@@ -1382,5 +1406,50 @@ mod tests {
 
         typ(&mut app, "m0");
         assert_eq!(app.slot_of(basket), None);
+    }
+
+    #[test]
+    fn space_a_toggles_the_actual_request_pane() {
+        let _storage = isolated_storage();
+        let mut app = app_with_env();
+        app.focus = Focus::Console;
+        app.move_focus(crate::app::Direction::Down);
+        assert_eq!(app.focus, Focus::Response, "hidden pane is skipped");
+
+        typ(&mut app, " a");
+        assert!(app.show_actual);
+        assert_eq!(app.focus, Focus::Actual);
+        assert!(app.actual_state.lines.to_string().contains("Not sent yet"));
+
+        // A snapshot for the loaded request shows up; edits are refused.
+        let actual = crate::model::ActualRequest {
+            at: chrono::Local::now(),
+            method: "GET".into(),
+            url: "https://example.test/x".into(),
+            headers: vec![],
+            client_headers: vec![("accept".into(), "*/*".into())],
+            body: crate::model::ActualBody::None,
+            environment: None,
+        };
+        app.record_actual(app.current.id, Some(actual));
+        assert!(
+            app.actual_state
+                .lines
+                .to_string()
+                .starts_with("GET https://example.test/x")
+        );
+        typ(&mut app, "ix");
+        press(&mut app, KeyCode::Esc);
+        assert!(
+            app.actual_state
+                .lines
+                .to_string()
+                .starts_with("GET https://example.test/x")
+        );
+
+        press(&mut app, KeyCode::Esc); // leave the buffer
+        typ(&mut app, " a"); // pressed while on the pane -> hide
+        assert!(!app.show_actual);
+        assert_eq!(app.focus, Focus::Response);
     }
 }

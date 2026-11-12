@@ -23,6 +23,8 @@ pub enum Focus {
     Body,
     ScriptEditor,
     Console,
+    /// What the last send actually put on the wire (hidden unless toggled, `space a`).
+    Actual,
     Response,
 }
 
@@ -51,9 +53,12 @@ impl Focus {
             (Focus::ScriptEditor, Down) => Some(Focus::Console),
             (Focus::Console, Up) => Some(Focus::ScriptEditor),
             (Focus::Console, Left) => Some(Focus::Headers),
-            (Focus::Console, Down) => Some(Focus::Response),
+            (Focus::Console, Down) => Some(Focus::Actual),
+            (Focus::Actual, Up) => Some(Focus::Console),
+            (Focus::Actual, Down) => Some(Focus::Response),
+            (Focus::Actual, Left) => Some(Focus::Body),
             (Focus::Response, Left) => Some(Focus::Body),
-            (Focus::Response, Up) => Some(Focus::Console),
+            (Focus::Response, Up) => Some(Focus::Actual),
             _ => None,
         }
     }
@@ -290,6 +295,13 @@ pub struct App {
     /// A file the main loop should open in `$PAGER` (set by `o` in the Response pane).
     pub pending_pager: Option<std::path::PathBuf>,
 
+    /// The Actual request pane is shown (`space a`).
+    pub show_actual: bool,
+    /// Last request actually sent, per request (in memory; contains resolved secrets).
+    pub actual_requests: HashMap<Uuid, crate::model::ActualRequest>,
+    /// Read-only buffer for the Actual request pane.
+    pub actual_state: EditorState,
+
     /// Requests with a send in flight (count, in case one is sent twice).
     pub in_flight: HashMap<Uuid, usize>,
     pub status_message: String,
@@ -361,6 +373,9 @@ impl App {
             response_light: None,
             response_wrapped: false,
             pending_pager: None,
+            show_actual: false,
+            actual_requests: HashMap::new(),
+            actual_state: EditorState::default(),
             in_flight: HashMap::new(),
             status_message: String::from(
                 "hjkl: select pane | Enter: focus, Esc: unfocus | space f: find request, space u/m/p/h/b/s/c/r: jump to pane | Ctrl+Enter: send | space e: environments | q: quit",
@@ -378,12 +393,20 @@ impl App {
     }
 
     pub fn move_focus(&mut self, dir: Direction) {
-        if let Some(next) = self.focus.neighbor(dir) {
-            if next == Focus::Tabs && !self.sidebar_visible {
-                return;
+        let Some(mut next) = self.focus.neighbor(dir) else {
+            return;
+        };
+        if next == Focus::Actual && !self.show_actual {
+            // hidden: step over it to the pane beyond
+            match Focus::Actual.neighbor(dir) {
+                Some(beyond) => next = beyond,
+                None => return,
             }
-            self.focus = next;
         }
+        if next == Focus::Tabs && !self.sidebar_visible {
+            return;
+        }
+        self.focus = next;
     }
 
     pub fn flatten_sidebar(&self) -> Vec<SidebarEntry> {
@@ -736,6 +759,7 @@ impl App {
         if self.response.is_none() && self.last_error.is_none() {
             self.load_latest_response_from_history();
         }
+        self.refresh_actual_view();
         self.header_index = 0;
         self.form_field_index = 0;
         self.path_param_index = 0;
@@ -1168,6 +1192,38 @@ impl App {
             Some(err) => format!("Post-response script failed: {err}"),
             None => format!("Post-response script ran on {label}"),
         };
+    }
+
+    /// Keep what a send actually put on the wire, for the Actual request pane.
+    pub fn record_actual(&mut self, id: Uuid, actual: Option<crate::model::ActualRequest>) {
+        if let Some(actual) = actual {
+            self.actual_requests.insert(id, actual);
+            if id == self.current.id {
+                self.refresh_actual_view();
+            }
+        }
+    }
+
+    /// Rebuild the Actual request pane for the loaded request.
+    pub fn refresh_actual_view(&mut self) {
+        let text = match self.actual_requests.get(&self.current.id) {
+            Some(actual) => {
+                let mut text = actual.to_text();
+                if text.len() > LIGHT_MODE_BYTES {
+                    let cut = floor_char_boundary(&text, LIGHT_MODE_BYTES);
+                    text.truncate(cut);
+                    text.push_str("\n── truncated for display (body over 1 MB) ──\n");
+                }
+                split_long_lines(text, VIEW_MAX_LINE_CHARS).0
+            }
+            None => {
+                "Not sent yet in this session. Send (F5) to see exactly what goes over the wire:\n\
+                     method, final URL, every header (including the ones the HTTP client adds)\n\
+                     and the body, after {{variables}}, path params and the pre-request script."
+                    .to_string()
+            }
+        };
+        self.actual_state = EditorState::new(Lines::from(text.as_str()));
     }
 
     /// The response on screen: the past one being viewed, otherwise the latest.

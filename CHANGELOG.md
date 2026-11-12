@@ -36,6 +36,9 @@ First public release candidate (0.1.0).
 - Light mode for responses over 1 MB: the Response pane shows the first 1 MB
   raw, without highlighting or undo; `o` opens the whole body in `$PAGER` and
   `S` saves it to a file (both available for any response).
+- Actual request pane (`space a`, hidden by default): the request exactly as
+  sent — final URL, all headers including the ones the HTTP client adds, and
+  the body or multipart parts — also when the send fails.
 - Binary responses: bodies that aren't text are streamed to a temp file
   instead of memory and shown as `Binary body · size · type`.
 - Saving response bodies (`S`): byte-for-byte, with Tab path completion, the

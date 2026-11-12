@@ -72,6 +72,36 @@ sending shows `Response (sending...)`; when its response arrives it is stored
 on that request (the status line tells you if it isn't the one on screen),
 never on whatever is open at the time.
 
+## Seeing exactly what was sent
+
+`space a` shows the **Actual request** pane above the Response (hidden by
+default; `space a` again while you're in it hides it). After a send it shows
+what really went over the wire for this request:
+
+```
+POST https://api.example.com/925e…/document-baskets
+authorization: Bearer eyJhbGciOi…
+content-type: application/json
+accept: */*    ← added by the HTTP client
+host: api.example.com    ← added by the HTTP client
+content-length: 312    ← added by the HTTP client
+
+{"profileId": 171, …}
+
+── sent 2026-11-12 14:03:22 · environment: dev ──
+```
+
+That is the request after `{{variable}}` substitution, path params and the
+pre-request script: the final URL, every header (the ones you set, plus those
+the HTTP client adds), and the body as sent. Form data lists each part
+(`key = value`, or `key = @path (size, filename)` for files) under its
+`multipart/form-data; boundary=…` content type; a binary body shows the file
+and its size. It's also recorded when the send itself fails (connection
+refused, TLS error), which is often when you need it most.
+
+It's a read-only vim buffer (search with `/`, copy with `v`…`y`). It's kept in
+memory for this session only and shows resolved values, including tokens.
+
 ## Response
 
 The Response pane shows status, timing, headers and body. JSON bodies are

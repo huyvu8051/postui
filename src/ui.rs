@@ -436,7 +436,35 @@ fn draw_body_and_response(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     draw_body_pane(f, app, cols[0]);
-    draw_response(f, app, cols[1]);
+    if app.show_actual {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+            .split(cols[1]);
+        draw_actual_request(f, app, rows[0]);
+        draw_response(f, app, rows[1]);
+    } else {
+        draw_response(f, app, cols[1]);
+    }
+}
+
+/// What the last send put on the wire (read-only buffer; `space a` toggles it).
+fn draw_actual_request(f: &mut Frame, app: &mut App, area: Rect) {
+    let title = match app.actual_requests.get(&app.current.id) {
+        Some(a) => format!(
+            " Actual request — {} · sent {} — read-only, space a: hide ",
+            a.method,
+            a.at.format("%H:%M:%S")
+        ),
+        None => " Actual request — not sent yet — space a: hide ".to_string(),
+    };
+    let theme = vim_editor_theme(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style(app, Focus::Actual))
+            .title(title),
+    );
+    f.render_widget(EditorView::new(&mut app.actual_state).theme(theme), area);
 }
 
 /// "Raw  [Form Data]  Binary" — the active body type is bracketed.
@@ -759,6 +787,7 @@ fn draw_maximized(f: &mut Frame, app: &mut App, area: Rect) {
         Focus::Body => draw_body_pane(f, app, area),
         Focus::ScriptEditor => draw_scripts_pane(f, app, area),
         Focus::Console => draw_script_console(f, app, area),
+        Focus::Actual => draw_actual_request(f, app, area),
         Focus::Response => draw_response(f, app, area),
     }
 }
